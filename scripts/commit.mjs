@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * work-check — commit.mjs  (engine back-half, zero model involvement)
+ * work-radar — commit.mjs  (engine back-half, zero model involvement)
  * =================================================================
  * Merges the section subagents' structured returns into the cache, advances
  * each source's coverage high-water mark (only for sections that SUCCEEDED —

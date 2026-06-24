@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * work-check — patch-fathom-jira.mjs
+ * work-radar — patch-fathom-jira.mjs
  * ==================================
  * Applies a user-confirmed Fathom action item → Jira ticket link to the cache.
  * Marks the action item done and appends the Fathom URL to the Jira issue entry.

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * work-check — render-cache.mjs  (fast-exit renderer, zero model involvement)
+ * work-radar — render-cache.mjs  (fast-exit renderer, zero model involvement)
  * ==========================================================================
  * When prep.mjs sets fast_exit:true (a re-run within 30 min of the same mode),
  * no MCP/subagent work happens. This script renders the still-open items
@@ -44,7 +44,7 @@ function main() {
   const mins = plan.minutes_since_last_run;
 
   const out = [];
-  out.push(`## Work Check (${plan.mode}) — ${plan.today}, ${plan.day_of_week}`);
+  out.push(`## Work Radar (${plan.mode}) — ${plan.today}, ${plan.day_of_week}`);
   const liveNote = liveSections.length ? `; ${liveSections.join(', ')} live-queried below` : '';
   out.push(`⏱️ Ran ${plan.mode} ${mins} min ago — Jira/Gmail/Fathom from cache (${cachedOpen} open), Slack/Bitbucket queried live${liveNote}.`);
   out.push('');

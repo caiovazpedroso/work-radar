@@ -1,5 +1,5 @@
 /**
- * work-check — regional holiday calendars for Jones offices.
+ * work-radar — regional holiday calendars for Jones offices.
  * PTO is per-user and comes from Google Calendar (calendar subagent), not here.
  */
 

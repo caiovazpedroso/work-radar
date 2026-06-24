@@ -1,6 +1,6 @@
 # Week Ahead — Sprint Health + Proximity Rendering
 
-This file holds the full forward-looking logic, preserved from the original `eod-check`. Load it only in modes that render Week Ahead (`eod`, `week`, `catchup`; `morning` uses a trimmed today+tomorrow view).
+This file holds the forward-looking sprint and week logic. Load it only in modes that render Week Ahead (`eod`, `week`, `catchup`; `morning` uses a trimmed today+tomorrow view).
 
 Inputs you need before using this file (produced by the engine in SKILL.md): `sprint_work_days_remaining` and `sprint_work_days_total` from `run_plan`, PTO dates (personal, from calendar subagent) and holiday dates (regional + calendar), `work_week`, `next_work_week_start`, the resolved sprint window, and the user's accountId. Calendar/Jira fetching for this section runs in the Week-Ahead subagent — see "Subagent brief" at the bottom.
 

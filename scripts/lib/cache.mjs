@@ -1,5 +1,5 @@
 /**
- * work-check — shared cache load and normalization.
+ * work-radar — shared cache load and normalization.
  * Used by prep.mjs (read) and commit.mjs (read-before-write).
  */
 

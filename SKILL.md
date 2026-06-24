@@ -1,12 +1,12 @@
 ---
-name: work-check
+name: work-radar
 description: >
   Personal work-surface sweep across Jira, Slack, Bitbucket, Fathom, Google Calendar,
   and Gmail — surfaces what needs your attention and what's coming up, in whichever
   mode fits the moment. Run it whenever the user signals a check-in on their work,
-  even without naming a tool. Triggers include: end-of-day / log-off ("EOD check",
-  "am I clear to log off?", "wrapping up", "done for today", "heading out"); morning /
-  start-of-day ("what's on my plate", "morning check", "start of day", "standup prep");
+  even without naming a tool. Triggers include: "work radar"; end-of-day / log-off
+  ("EOD check", "am I clear to log off?", "wrapping up", "done for today", "heading out");
+  morning / start-of-day ("what's on my plate", "morning check", "start of day", "standup prep");
   mid-day ("what needs me right now?", "anything urgent?", "quick check"); week
   planning ("what's my week look like?", "week ahead", "sprint check"); and catch-up
   ("catch me up", "what did I miss", "back from PTO/vacation"). When in doubt, run it.
@@ -16,12 +16,13 @@ compatibility: >
   Fathom. Personalized for Jones Engineering (JON project, mirudman workspace).
 ---
 
-# Work Check
+# Work Radar
 
 A structured sweep of every work surface. The engine is always the same — a Node script
 resolves dates + cache + scan windows, per-section Haiku subagents fan out, a Node script
-commits the results, and you synthesize a checklist. A **mode** tunes the window, which
-sections run, the framing, and whether the forward-looking Week Ahead is included.
+commits the results, then you synthesize the checklist as the final user-visible output. A
+**mode** tunes the window, which sections run, the framing, and whether the forward-looking
+Week Ahead is included.
 
 **The design that keeps this fast, cheap, and reliable on any model (incl. Sonnet):**
 
@@ -36,18 +37,27 @@ sections run, the framing, and whether the forward-looking Week Ahead is include
    slice. Still-open items re-render from cached "cards" for free.
 
 **Locale (Jones offices):** Work-week and regional holidays are per-user via
-`~/.claude/cache/work-check-user.json` — LATAM default Mon–Fri with US federal holidays;
+`~/.claude/cache/work-radar-user.json` — LATAM default Mon–Fri with US federal holidays;
 Tel Aviv Sun–Thu with Israel holidays. Personal PTO always comes from the user's own Google Calendar.
 
 ---
 
 ## Modes
 
-Pick the mode from the user's phrasing. If the user named one explicitly ("work-check week"),
-use it. If ambiguous, infer from local time of day (morning hours → `morning`, late
-afternoon/evening → `eod`, otherwise → `now`). **Always state which mode you ran** in the
-first line of output. (You do not need to compute the window — `prep.mjs` does, using the mode
-below as a fallback **cap**; the real window is the coverage high-water mark.)
+Pick the mode from the user's phrasing, in this order:
+
+1. **User named a mode explicitly** ("work-radar week") → use it (even on first run).
+2. **First run** → `catchup`. Before calling `prep.mjs`, check whether
+   `~/.claude/cache/work-radar-cache.json` exists (same path as `DEFAULT_CACHE` in
+   `scripts/lib/shared.mjs`). If the file is missing, use `catchup` — never default to `now`
+   on first run. If `prep.mjs` later sets `first_run: true` in the run-plan, note it in the
+   opening line.
+3. **Otherwise, ambiguous phrasing** → infer from local time of day (morning hours → `morning`,
+   late afternoon/evening → `eod`, otherwise → `now`).
+
+**Always state which mode you ran** in the first line of output. (You do not need to compute
+the window — `prep.mjs` does, using the mode below as a fallback **cap**; the real window is
+the coverage high-water mark.)
 
 | Mode | Window cap | Sections | Week Ahead | Worklog | Framing |
 |------|------------|----------|-----------|---------|---------|
@@ -80,8 +90,8 @@ Trim dates to `YYYY-MM-DD`. If the call fails or returns no issues, proceed with
 ## Step 1 — Run prep.mjs (replaces all date/cache/window math)
 
 Run based on your OS, passing the sprint data from Step 0:
-- **Mac/Linux:** `node ~/.claude/skills/work-check/scripts/prep.mjs --mode <mode> --sprint-start <YYYY-MM-DD> --sprint-end <YYYY-MM-DD> --sprint-name "<name>"`
-- **Windows (PowerShell):** `node "$env:USERPROFILE/.claude/skills/work-check/scripts/prep.mjs" --mode <mode> --sprint-start <YYYY-MM-DD> --sprint-end <YYYY-MM-DD> --sprint-name "<name>"`
+- **Mac/Linux:** `node ~/.claude/skills/work-radar/scripts/prep.mjs --mode <mode> --sprint-start <YYYY-MM-DD> --sprint-end <YYYY-MM-DD> --sprint-name "<name>"`
+- **Windows (PowerShell):** `node "$env:USERPROFILE/.claude/skills/work-radar/scripts/prep.mjs" --mode <mode> --sprint-start <YYYY-MM-DD> --sprint-end <YYYY-MM-DD> --sprint-name "<name>"`
 
 Omit the `--sprint-*` args if Step 0 failed.
 
@@ -105,7 +115,7 @@ It prints ONE **run-plan JSON** object. Read it — it gives you, with zero math
 - `skill_dir`, `user_config_path`, `cache_exists`, `first_run`: used by Step 1.5 (first-run setup).
 
 If `prep.mjs` exits non-zero or prints no JSON, **stop** — report the error and point to README
-install paths (`~/.claude/skills/work-check/`). A successful run proves Node can reach the scripts.
+install paths (`~/.claude/skills/work-radar/`). A successful run proves Node can reach the scripts.
 
 Announce the window: *"Running {mode} check — scanning since {since.*.iso}…"* (or note a
 first-time/wider scan if `first_run` is true or `since` equals the window cap).
@@ -116,7 +126,7 @@ first-time/wider scan if `first_run` is true or `since` equals the window cap).
 
 Run this when **either** flag is true in the run-plan:
 
-- `user_config_using_defaults` — no `work-check-user.json` yet
+- `user_config_using_defaults` — no `work-radar-user.json` yet
 - `first_run` — no cache file yet, or cache has never completed a run
 
 **Do not skip silently.** The user should see a short setup beat before the full sweep continues.
@@ -129,7 +139,7 @@ Confirm `prep.mjs` succeeded and report these paths back to the user (proves scr
 |-------|--------|
 | Skill scripts | `run_plan.skill_dir` (must contain `scripts/prep.mjs`) |
 | User config | `run_plan.user_config_path` |
-| Runtime cache | `run_plan.cache_path` (created automatically at Step 7 — no manual file needed) |
+| Runtime cache | `run_plan.cache_path` (created automatically at Step 6 — no manual file needed) |
 
 If `cache_exists` is false, say: *"No cache yet — first full scan, then `commit.mjs` will create it."*
 
@@ -137,7 +147,7 @@ If `cache_exists` is false, say: *"No cache yet — first full scan, then `commi
 
 **Pause the sweep** and ask:
 
-> *"First-time work-check setup — which office pattern?*
+> *"First-time work-radar setup — which office pattern?*
 > *1. **LATAM** — Mon–Fri, US federal holidays*
 > *2. **Tel Aviv** — Sun–Thu, Israel public holidays*
 > *Reply 1 or 2 (or tell me if both defaults are fine for now)."*
@@ -160,7 +170,7 @@ When the user answers:
 3. **Re-run `prep.mjs`** with the same `--mode` and `--sprint-*` args from Step 1. Use the new run-plan for all following steps.
 
 If the user says defaults are fine, continue without writing the file — but say they can add
-`work-check-user.json` later (see README).
+`work-radar-user.json` later (see README).
 
 ### C. Continue
 
@@ -171,12 +181,12 @@ After setup (or user opt-out), proceed to Step 2. On `first_run`, the scan windo
 ## Step 2 — Fast-exit vs full run
 
 ```
-fast_exit = true  → render-cache.mjs (save markdown) → Step 3 → Step 5 (query_sections only) → Step 6 → Step 7 → Step 8
-fast_exit = false → skip render-cache → Step 3 → Step 4 → Step 5 (all sections) → Step 6 → Step 7 → Step 8
+fast_exit = true  → render-cache.mjs (save markdown) → Step 3 → Step 5 (query_sections only) → Step 6 (commit) → Step 7 (render) → Step 8
+fast_exit = false → skip render-cache → Step 3 → Step 4 → Step 5 (all sections) → Step 6 (commit) → Step 7 (render) → Step 8
 ```
 
 If `run_plan.fast_exit` is `true` (a re-run within 30 min of the same mode — never in `now`),
-run `render-cache.mjs` now and **save** the markdown for Step 6 — then **continue** to Step 3
+run `render-cache.mjs` now and **save** the markdown for Step 7 — then **continue** to Step 3
 (do not stop, do not commit here):
 
 ```
@@ -265,7 +275,26 @@ merged PTO/holiday dates, and accountId. It returns its rendered block in `week_
 
 ---
 
-## Step 6 — Synthesize and output (you render this — it is NOT scripted)
+## Step 6 — Commit the cache (replaces all merge/write math)
+
+Collect every subagent's structured JSON into a single JSON array, write it to a temp file, then:
+
+```
+node "{run_plan.skill_dir}/scripts/commit.mjs" --mode <mode> --run-start <run_plan.run_start_iso> --returns <file>
+```
+
+Run this **before** rendering the report (Step 7) so commit output appears in the terminal
+immediately above the final checklist. Read the stderr line (`commit.mjs: wrote …; coverage
+advanced for […]; last_run[…]=…`) — you will echo a summary of it at the bottom of the report.
+
+Commit **before** asking about Fathom matches — unconfirmed matches stay `pending` in cache.
+It merges every `cache_delta`, advances `coverage` only for sections with `ok:true` (failed
+sections self-heal next run), stamps `last_run[mode]`, preserves unknown keys (e.g. `merged_prs`),
+and writes atomically. Single writer = no partial-write or concurrency problems.
+
+---
+
+## Step 7 — Synthesize and output
 
 **Fast-exit (`run_plan.fast_exit` is true):** Print the saved `render-cache.mjs` markdown block
 first, then append live Slack and Bitbucket sections from the Step 5 subagent `flagged[]` arrays
@@ -273,12 +302,12 @@ using the same section heading format below. Week Ahead is already in the cache 
 
 **Full run:** Render all collected `flagged[]` arrays into the template below.
 
-Show all sections the mode includes, even when green. Lead with the mode and date (from the run-plan). Adapt framing per the
-mode table. Rendering stays here (not in a script) because the proximity tiers, framing, and
-sprint ordering are judgment calls — and the distilled items are already tiny.
+Show all sections the mode includes, even when green. Lead with the mode and date (from the
+run-plan). Adapt framing per the mode table. This step is the **last** user-visible artifact —
+deliver it after Step 6 so the report stays at the bottom of the conversation.
 
 ```
-## Work Check ({mode}) — {today}, {day_of_week}
+## Work Radar ({mode}) — {today}, {day_of_week}
 {window line, e.g. "Scanning since {since.*.iso}"}
 {optional: work week line, e.g. "Work week: Sun–Thu (Tel Aviv) · Holidays: IL"}
 
@@ -305,24 +334,12 @@ sprint ordering are judgment calls — and the distilled items are already tiny.
 
 ### Week Ahead
 {rendered by the Week-Ahead subagent per references/week-ahead.md — include for modes with Week Ahead}
+
+---
+Cache saved — coverage advanced for [{sections from commit stderr}]; last_run[{mode}]={run_start_iso}
 ```
 
 **Deliver the full report now** — do not wait for Fathom↔Jira confirmations before showing this.
-
----
-
-## Step 7 — Commit the cache (replaces all merge/write math)
-
-Collect every subagent's structured JSON into a single JSON array, write it to a temp file, then:
-
-```
-node "{run_plan.skill_dir}/scripts/commit.mjs" --mode <mode> --run-start <run_plan.run_start_iso> --returns <file>
-```
-
-Commit **before** asking about Fathom matches — unconfirmed matches stay `pending` in cache.
-It merges every `cache_delta`, advances `coverage` only for sections with `ok:true` (failed
-sections self-heal next run), stamps `last_run[mode]`, preserves unknown keys (e.g. `merged_prs`),
-and writes atomically. Single writer = no partial-write or concurrency problems.
 
 ---
 
@@ -330,7 +347,7 @@ and writes atomically. Single writer = no partial-write or concurrency problems.
 
 **Skip when `run_plan.fast_exit` is true** — the Fathom subagent did not run.
 
-After Step 6 (report delivered) and Step 7 (cache committed), check whether the Fathom subagent
+After Step 6 (cache committed) and Step 7 (report delivered), check whether the Fathom subagent
 return included any `potential_jira_matches` (non-empty array). If so, append a short footer:
 
 > *"{N} Fathom action item(s) may match Jira tickets — reply yes / no / skip on each when ready."*
@@ -354,7 +371,7 @@ It marks the action item `done` (text unchanged) and appends the Fathom URL to `
 
 For **denied** matches ("no" or "skip"), do nothing — the action item stays unlinked.
 
-Never block the Work Check report on these answers.
+Never block the Work Radar report on these answers.
 
 ---
 

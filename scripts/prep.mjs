@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * work-check — prep.mjs  (engine front-half, zero model involvement)
+ * work-radar — prep.mjs  (engine front-half, zero model involvement)
  * =================================================================
  * Resolves everything deterministic so the orchestrating model never does
  * date or JSON math. Emits ONE run-plan JSON object on stdout.
@@ -201,6 +201,11 @@ function main() {
   }
   if (firstRun) {
     console.error(`prep.mjs: first run — cache will be created at commit (${cachePath})`);
+    if (mode === 'now') {
+      console.error(
+        'prep.mjs: warning — first run with mode "now" skips Gmail/Fathom/Week Ahead; SKILL recommends "catchup" on first run',
+      );
+    }
   }
 
   // 3. since per source

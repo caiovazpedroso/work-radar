@@ -1,5 +1,5 @@
 /**
- * work-check — per-user locale config (work week + holiday region).
+ * work-radar — per-user locale config (work week + holiday region).
  * Lives outside the skill dir so installs/upgrades don't overwrite it.
  */
 
@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 
-export const DEFAULT_USER_CONFIG = join(homedir(), '.claude', 'cache', 'work-check-user.json');
+export const DEFAULT_USER_CONFIG = join(homedir(), '.claude', 'cache', 'work-radar-user.json');
 
 const DEFAULTS = {
   work_week: 'mon_fri',

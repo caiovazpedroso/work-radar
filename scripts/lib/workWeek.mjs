@@ -1,5 +1,5 @@
 /**
- * work-check — work-week presets and date helpers.
+ * work-radar — work-week presets and date helpers.
  * Jones teams use Mon–Fri (LATAM) or Sun–Thu (Tel Aviv).
  */
 

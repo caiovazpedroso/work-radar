@@ -1,4 +1,4 @@
-# work-check
+# work-radar
 
 A Claude Code skill that sweeps Jira, Slack, Gmail, Google Calendar, Bitbucket, and Fathom and surfaces what needs your attention. Built for Jones Engineering.
 
@@ -17,18 +17,18 @@ No `npm install` needed — the scripts use only Node.js built-ins. You need Nod
 
 ## Install
 
-1. Copy this folder to `~/.claude/skills/work-check/`
-   - Mac/Linux: `~/.claude/skills/work-check/`
-   - Windows: `%USERPROFILE%\.claude\skills\work-check\`
+1. Copy this folder to `~/.claude/skills/work-radar/`
+   - Mac/Linux: `~/.claude/skills/work-radar/`
+   - Windows: `%USERPROFILE%\.claude\skills\work-radar\`
 
 2. Configure your locale (one-time):
 
    ```bash
    mkdir -p ~/.claude/cache
-   cp ~/.claude/skills/work-check/references/user-config.example.json ~/.claude/cache/work-check-user.json
+   cp ~/.claude/skills/work-radar/references/user-config.example.json ~/.claude/cache/work-radar-user.json
    ```
 
-   Edit `~/.claude/cache/work-check-user.json`:
+   Edit `~/.claude/cache/work-radar-user.json`:
 
    | Field | Values | Who |
    |-------|--------|-----|
@@ -41,17 +41,45 @@ No `npm install` needed — the scripts use only Node.js built-ins. You need Nod
 
 ## Usage
 
-In any Claude Code conversation, trigger with natural phrasing:
+In any Claude Code conversation, trigger with natural phrasing — or invoke `/work-radar` with no
+mode (see **Default mode** below).
+
+### Trigger phrases
 
 | You say | Mode |
 |---------|------|
-| "EOD check", "am I clear to log off?" | `eod` — all sources, did I log hours? |
-| "morning check", "what's on my plate?" | `morning` — all sources, what needs me today? |
-| "anything urgent?" | `now` — Slack, Bitbucket, Jira (light) |
-| "what's my week look like?" | `week` — Jira + full Week Ahead |
-| "catch me up", "back from PTO" | `catchup` — all sources, 14-day window |
+| "EOD check", "am I clear to log off?", "wrapping up" | `eod` |
+| "morning check", "what's on my plate?", "standup prep" | `morning` |
+| "anything urgent?", "what needs me right now?" | `now` |
+| "what's my week look like?", "week ahead", "sprint check" | `week` |
+| "catch me up", "back from PTO", "what did I miss" | `catchup` |
 
-Or invoke explicitly: `/work-check` (defaults to mode based on time of day).
+### Modes
+
+Each mode tunes the scan window, which sources are checked, and how the report is framed.
+See [SKILL.md](SKILL.md) for the full agent workflow.
+
+| Mode | Window cap | Sections | Week Ahead | Worklog | Framing |
+|------|------------|----------|-----------|---------|---------|
+| `eod` | last 3d | all | yes (heads-up) | yes (did I log ~8h?) | "clear to log off?" |
+| `morning` | last 3d | all, framed "needs you today" | today + tomorrow only | today's target | "here's your day" |
+| `now` | last 1d | Slack DMs/mentions, Bitbucket review queue, urgent Jira (light) | none | no | "what needs you right now" |
+| `week` | this week → sprint end | Jira due/urgent only | yes (primary, full detail) | no | "plan the week" |
+| `catchup` | last 14d | all, wider window | yes | no | "what happened while you were out" |
+
+### Default mode
+
+When you do not name a mode explicitly:
+
+1. **First run** (no `~/.claude/cache/work-radar-cache.json` yet) → always `catchup` — a full
+   14-day sweep across every source, regardless of time of day.
+2. **After that** → time of day: morning hours → `morning`, late afternoon/evening → `eod`,
+   otherwise → `now`.
+
+### Fast-exit
+
+Re-running the **same mode** within 30 minutes replays Jira, Gmail, and Fathom from the local
+cache and only live-queries Slack and Bitbucket. Use `now` mode to force a lighter full refresh.
 
 ## Locale examples
 

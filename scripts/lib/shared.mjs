@@ -1,5 +1,5 @@
 /**
- * work-check — shared constants and pure utilities.
+ * work-radar — shared constants and pure utilities.
  * Imported by prep.mjs, commit.mjs, and render-cache.mjs.
  * No side effects; no filesystem access.
  */
@@ -7,7 +7,7 @@
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 
-export const DEFAULT_CACHE = join(homedir(), '.claude', 'cache', 'work-check-cache.json');
+export const DEFAULT_CACHE = join(homedir(), '.claude', 'cache', 'work-radar-cache.json');
 
 export const MODES = {
   eod:     { windowDays: 3,  sections: ['jira', 'slack', 'bitbucket', 'fathom', 'gmail'], worklog: true,  weekAhead: 'full', fastExit: true },
