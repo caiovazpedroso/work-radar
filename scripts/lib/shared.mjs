@@ -1,6 +1,6 @@
 /**
  * work-radar — shared constants and pure utilities.
- * Imported by prep.mjs, commit.mjs, and render-cache.mjs.
+ * Imported by prep.mjs, commit.mjs, and render-report.mjs.
  * No side effects; no filesystem access.
  */
 
@@ -9,16 +9,48 @@ import { homedir } from 'node:os';
 
 export const DEFAULT_CACHE = join(homedir(), '.claude', 'cache', 'work-radar-cache.json');
 
-export const MODES = {
-  eod:     { windowDays: 3,  sections: ['jira', 'slack', 'bitbucket', 'fathom', 'gmail'], worklog: true,  weekAhead: 'full', fastExit: true },
-  morning: { windowDays: 3,  sections: ['jira', 'slack', 'bitbucket', 'fathom', 'gmail'], worklog: true,  weekAhead: 'trim', fastExit: true },
-  now:     { windowDays: 1,  sections: ['slack', 'bitbucket', 'jira'],                    worklog: false, weekAhead: 'none', fastExit: false },
-  week:    { windowDays: 7,  sections: ['jira'],                                          worklog: false, weekAhead: 'full', fastExit: true },
-  catchup: { windowDays: 14, sections: ['jira', 'slack', 'bitbucket', 'fathom', 'gmail'], worklog: false, weekAhead: 'full', fastExit: true },
+/** @deprecated legacy mode keys — used only for last_run migration */
+export const LEGACY_MODES = {
+  eod:     { sections: ['jira', 'slack', 'bitbucket', 'fathom', 'gmail'] },
+  morning: { sections: ['jira', 'slack', 'bitbucket', 'fathom', 'gmail'] },
+  now:     { sections: ['slack', 'bitbucket', 'jira'] },
+  week:    { sections: ['jira'] },
+  catchup: { sections: ['jira', 'slack', 'bitbucket', 'fathom', 'gmail'] },
 };
 
-// Which coverage key each section advances (sections absent here are
-// cache-based or pure-state and own no coverage high-water mark).
+export const PROFILES = {
+  radar: {
+    liveSections: ['jira', 'slack', 'bitbucket', 'fathom', 'gmail'],
+    windowDaysMax: 14,
+    windowDaysMin: 1,
+    firstRunWindowDays: 14,
+    worklog: true,
+    weekAhead: 'full',
+    fastExit: true,
+    runCalendarScope: true,
+  },
+  light: {
+    liveSections: ['jira', 'slack', 'bitbucket'],
+    windowDaysMax: 1,
+    windowDaysMin: 1,
+    firstRunWindowDays: 1,
+    worklog: false,
+    weekAhead: 'none',
+    fastExit: false,
+    runCalendarScope: false,
+  },
+};
+
+export const SECTION_LABELS = {
+  jira: 'Jira',
+  slack: 'Slack',
+  bitbucket: 'Bitbucket',
+  gmail: 'Gmail',
+  fathom: 'Fathom',
+};
+
+export const SECTION_ORDER = ['jira', 'slack', 'bitbucket', 'gmail', 'fathom'];
+
 export const SECTION_COVERAGE = {
   gmail: 'gmail_through',
   jira: 'jira_updates_through',
@@ -28,21 +60,19 @@ export const SECTION_COVERAGE = {
 
 export const TTL_DAYS = { gmail_threads: 7, jira_comments: 14, calendar_events: 7 };
 
-// Sections whose open items re-render from cached cards on fast-exit.
 export const OPEN_CARD_SECTIONS = new Set(['gmail', 'jira', 'fathom']);
 
-/** Parse any timestamp we store: plain date, ISO+Z, ISO+offset, or Jira "+0300". */
+export const LOG_OFF_HOUR = 15;
+
 export function parseStamp(s) {
   if (!s) return null;
-  // Normalise a trailing "+HHMM"/"-HHMM" (no colon) into "+HH:MM" for Date().
   const fixed = String(s).replace(/([+-]\d{2})(\d{2})$/, '$1:$2');
   const d = new Date(fixed);
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
-/** Format a Date as a UTC Zulu ISO string (e.g. 2026-06-24T06:40:41.664Z). */
 export function utcIso(d) {
-  return d.toISOString(); // already produces Z suffix
+  return d.toISOString();
 }
 
 export function isPlainObject(x) {
@@ -55,4 +85,10 @@ export function parseArgs(argv) {
     if (argv[i].startsWith('--')) out[argv[i].slice(2)] = argv[i + 1];
   }
   return out;
+}
+
+export function resolveProfile(args) {
+  const profile = args.profile || args.mode;
+  if (!profile || !PROFILES[profile]) return null;
+  return profile;
 }

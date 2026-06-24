@@ -2,382 +2,334 @@
 name: work-radar
 description: >
   Personal work-surface sweep across Jira, Slack, Bitbucket, Fathom, Google Calendar,
-  and Gmail — surfaces what needs your attention and what's coming up, in whichever
-  mode fits the moment. Run it whenever the user signals a check-in on their work,
-  even without naming a tool. Triggers include: "work radar"; end-of-day / log-off
-  ("EOD check", "am I clear to log off?", "wrapping up", "done for today", "heading out");
-  morning / start-of-day ("what's on my plate", "morning check", "start of day", "standup prep");
-  mid-day ("what needs me right now?", "anything urgent?", "quick check"); week
-  planning ("what's my week look like?", "week ahead", "sprint check"); and catch-up
-  ("catch me up", "what did I miss", "back from PTO/vacation"). When in doubt, run it.
+  and Gmail — surfaces what needs your attention and what's coming up. Two profiles:
+  **radar** (full sweep) and **light** (quick urgent check + cache digest). Run whenever
+  the user signals a check-in: "work radar", "am I clear to log off?", "what's on my plate",
+  "quick check", "anything urgent?", "week ahead", etc.
 compatibility: >
-  Claude Code only. Requires Node 16+, Haiku subagent support (`Agent`, model haiku),
-  and MCP integrations for Atlassian, Slack, Gmail, Google Calendar, Bitbucket, and
-  Fathom. Personalized for Jones Engineering (JON project, mirudman workspace).
+  Claude Code only. Requires Node 16+ and MCP integrations for Atlassian, Slack, Gmail,
+  Google Calendar, Bitbucket, and Fathom. Personalized for Jones Engineering (JON project,
+  mirudman workspace).
 ---
 
 # Work Radar
 
-A structured sweep of every work surface. The engine is always the same — a Node script
-resolves dates + cache + scan windows, per-section Haiku subagents fan out, a Node script
-commits the results, then you synthesize the checklist as the final user-visible output. A
-**mode** tunes the window, which sections run, the framing, and whether the forward-looking
-Week Ahead is included.
+Node scripts own dates, cache, and rendering. **You** run MCP passes inline in this conversation,
+build a `returns[]` array, commit, then print `render-report.mjs` stdout verbatim.
 
-**The design that keeps this fast, cheap, and reliable on any model (incl. Sonnet):**
+## Global rules
 
-1. **You never do date or JSON math.** Two Node scripts own all of it
-   (`scripts/prep.mjs`, `scripts/commit.mjs`). You call them and read their JSON. A wrong
-   day-of-week or window would silently break everything — so it is never computed by hand.
-2. **Raw tool output never enters this conversation.** Each section runs in a cheap (Haiku)
-   subagent that returns only a small **structured JSON** object (flagged items + cache
-   delta). You synthesize from those, never from raw Jira/Bitbucket/Gmail JSON.
-3. **Already-covered time is never re-fetched.** `prep.mjs` computes a per-source `since`
-   cutoff from the cache's coverage high-water marks, so each subagent scans only the *new*
-   slice. Still-open items re-render from cached "cards" for free.
+1. **No date/JSON math** — use `prep.mjs`, `commit.mjs`, `render-report.mjs` only.
+2. **Distill, don't dump** — MCP payloads stay out of chat; brief status lines OK ("Jira done — 4 flagged").
+3. **Append to `returns[]`** — one JSON object per section; write temp file only at Step 6.
+4. **`flagged[]` = action only** (`🔴`/`🟡`). Resolved items → `notes[]` or omit. Never `✅` in flagged.
+5. **Cache timestamps** — UTC Zulu ISO (`2026-06-24T06:40:41.664Z`), never offset suffixes.
+6. **Never hand-format the report** — only `render-report.mjs` stdout is user-facing.
+7. **Current-state queries always run**; time-windowed queries use `since` from run-plan only.
 
-**Locale (Jones offices):** Work-week and regional holidays are per-user via
-`~/.claude/cache/work-radar-user.json` — LATAM default Mon–Fri with US federal holidays;
-Tel Aviv Sun–Thu with Israel holidays. Personal PTO always comes from the user's own Google Calendar.
+**Locale:** `~/.claude/cache/work-radar-user.json` — `work_week` (`mon_fri`|`sun_thu`), `holiday_region` (`latam`|`il`). PTO from user's Google Calendar only.
 
----
+## Profiles
 
-## Modes
+| Phrasing | Profile |
+|----------|---------|
+| "quick check", "anything urgent?", "what needs me right now?" | `light` |
+| Everything else; first run (no cache) | `radar` |
 
-Pick the mode from the user's phrasing, in this order:
+| Profile | Live | Week Ahead | Worklog | Fast-exit |
+|---------|------|------------|---------|-----------|
+| `radar` | Jira, Slack, Bitbucket, Fathom, Gmail + calendar | full pass (cached on re-run) | yes (log-off anchor after 15:00 local) | radar re-run < 30 min |
+| `light` | Jira, Slack, Bitbucket | cache digest | no | n/a |
 
-1. **User named a mode explicitly** ("work-radar week") → use it (even on first run).
-2. **First run** → `catchup`. Before calling `prep.mjs`, check whether
-   `~/.claude/cache/work-radar-cache.json` exists (same path as `DEFAULT_CACHE` in
-   `scripts/lib/shared.mjs`). If the file is missing, use `catchup` — never default to `now`
-   on first run. If `prep.mjs` later sets `first_run: true` in the run-plan, note it in the
-   opening line.
-3. **Otherwise, ambiguous phrasing** → infer from local time of day (morning hours → `morning`,
-   late afternoon/evening → `eod`, otherwise → `now`).
-
-**Always state which mode you ran** in the first line of output. (You do not need to compute
-the window — `prep.mjs` does, using the mode below as a fallback **cap**; the real window is
-the coverage high-water mark.)
-
-| Mode | Window cap | Sections | Week Ahead | Worklog | Framing |
-|------|------------|----------|-----------|---------|---------|
-| `eod` | last 3d | all | yes (heads-up) | yes (did I log ~8h?) | "clear to log off?" |
-| `morning` | last 3d | all, framed "needs you today" | today + tomorrow only | today's target | "here's your day" |
-| `now` | last 1d | Slack DMs/mentions, Bitbucket review queue, urgent Jira (light) | none | no | "what needs you right now" |
-| `week` | this week → sprint end | Jira due/urgent only | yes (primary, full detail) | no | "plan the week" |
-| `catchup` | last 14d | all, wider window | yes | no | "what happened while you were out" |
+Scan window = cache gap (14-day cap on first run). Report anchor is **last line**; scroll up for detail.
 
 ---
 
-## Step 0 — Resolve active sprint from Jira (inline, before prep.mjs)
+## Step 0 — Sprint (before prep)
 
-Call `mcp__plugin_atlassian_atlassian__searchJiraIssuesUsingJql` (do NOT delegate to a subagent):
+`mcp__plugin_atlassian_atlassian__searchJiraIssuesUsingJql`:
+`project = JON AND sprint in openSprints()`, `maxResults: 1`, `fields: ["customfield_10010"]`.
+Extract sprint `name`, `startDate`, `endDate` → trim to `YYYY-MM-DD`. On failure, omit sprint args.
 
-```
-jql: "project = JON AND sprint in openSprints()"
-cloudId: "<cloudId>"
-maxResults: 1
-fields: ["customfield_10010"]
+---
+
+## Step 1 — prep.mjs
+
+```bash
+node "{skill_dir}/scripts/prep.mjs" --profile <radar|light> \
+  --sprint-start <YYYY-MM-DD> --sprint-end <YYYY-MM-DD> --sprint-name "<name>"
 ```
 
-Extract `issues[0].fields.customfield_10010[0]` → `name`, `startDate`, `endDate`.
-Trim dates to `YYYY-MM-DD`. If the call fails or returns no issues, proceed without sprint args.
+Windows: `$env:USERPROFILE/.claude/skills/work-radar/scripts/prep.mjs`. Default profile `radar`. Legacy `--mode` accepted.
 
-> **Why:** The Agile board REST endpoint (`/rest/agile/1.0/board/…`) is not accessible via the available MCP tools (they only accept ARI identifiers). Sprint data is reliably available on any issue via `customfield_10010`.
+**Run-plan keys you need:**
 
----
+| Key | Use |
+|-----|-----|
+| `profile`, `today`, `local_hour`, `work_week`, `holiday_region` | context |
+| `query_sections` | which sections to run live |
+| `run_calendar_scope`, `run_week_ahead`, `worklog`, `fast_exit` | routing |
+| `since.jira.jql_relative` | JQL `updatedDate >= "-885m"` |
+| `since.gmail.epoch` | Gmail `after:<epoch>` |
+| `since.slack.unix` | Slack search **`after` param** (not `after:` modifier) |
+| `since.calendar.start_time` | Calendar `startTime` |
+| `slices` | open cache items per source |
+| `sprint`, `sprint_work_days_remaining`, `sprint_work_days_total` | week ahead — **never recompute** |
+| `week`, `next_work_week_start`, `regional_holidays` | week ahead + PTO context |
+| `run_start_iso`, `cache_path`, `skill_dir`, `user_config_path` | commit + paths |
+| `first_run`, `user_config_using_defaults`, `cache_exists` | Step 1.5 |
 
-## Step 1 — Run prep.mjs (replaces all date/cache/window math)
-
-Run based on your OS, passing the sprint data from Step 0:
-- **Mac/Linux:** `node ~/.claude/skills/work-radar/scripts/prep.mjs --mode <mode> --sprint-start <YYYY-MM-DD> --sprint-end <YYYY-MM-DD> --sprint-name "<name>"`
-- **Windows (PowerShell):** `node "$env:USERPROFILE/.claude/skills/work-radar/scripts/prep.mjs" --mode <mode> --sprint-start <YYYY-MM-DD> --sprint-end <YYYY-MM-DD> --sprint-name "<name>"`
-
-Omit the `--sprint-*` args if Step 0 failed.
-
-It prints ONE **run-plan JSON** object. Read it — it gives you, with zero math on your part:
-
-- `today`, `day_of_week`, `week` (`work_days`, `week_start`, `week_end`, `work_week_label`).
-- `work_week`, `holiday_region`, `regional_holidays`, `next_work_week_start`.
-- `sections`, `worklog`, `week_ahead` (`full` / `trim` / `none`).
-- `fast_exit` (+ `fast_exit_reason`, `minutes_since_last_run`, `fast_exit_live_sections`).
-- `query_sections`: which section subagents to spawn in Step 5 (all mode sections on a full run; live-only sections on fast-exit).
-- `sprint_work_days_remaining`, `sprint_work_days_total`: work-day counts for the user's work-week pattern — never recompute in subagents.
-- `since`: the per-source cutoff already formatted for each API:
-  - `since.jira.jql_relative` → e.g. `"-885m"` (use in JQL `updatedDate >= "-885m"` — relative,
-    so it is timezone-safe).
-  - `since.gmail.epoch` → Unix seconds for Gmail `after:<epoch>` (works at sub-day resolution).
-  - `since.slack.unix` → Unix seconds for the Slack search **`after` parameter**.
-  - `since.calendar.start_time` → ISO 8601 for `list_events` **`startTime`**.
-- `slices`: the lean cache slices to hand subagents (only OPEN items — see Step 5).
-- `open_cards`, `week_ahead_render`: used by the fast-exit path.
-- `run_start_iso`, `cache_path`: pass these to `commit.mjs` later.
-- `skill_dir`, `user_config_path`, `cache_exists`, `first_run`: used by Step 1.5 (first-run setup).
-
-If `prep.mjs` exits non-zero or prints no JSON, **stop** — report the error and point to README
-install paths (`~/.claude/skills/work-radar/`). A successful run proves Node can reach the scripts.
-
-Announce the window: *"Running {mode} check — scanning since {since.*.iso}…"* (or note a
-first-time/wider scan if `first_run` is true or `since` equals the window cap).
+On non-zero exit, stop and point to README. Announce: *"Running {profile} — scanning since {since.jira.iso}…"*
 
 ---
 
-## Step 1.5 — First-run setup (before Step 2)
+## Step 1.5 — First-run setup
 
-Run this when **either** flag is true in the run-plan:
-
-- `user_config_using_defaults` — no `work-radar-user.json` yet
-- `first_run` — no cache file yet, or cache has never completed a run
-
-**Do not skip silently.** The user should see a short setup beat before the full sweep continues.
-
-### A. Preflight (always on first-run)
-
-Confirm `prep.mjs` succeeded and report these paths back to the user (proves scripts + cache dir are reachable):
-
-| Check | Source |
-|-------|--------|
-| Skill scripts | `run_plan.skill_dir` (must contain `scripts/prep.mjs`) |
-| User config | `run_plan.user_config_path` |
-| Runtime cache | `run_plan.cache_path` (created automatically at Step 6 — no manual file needed) |
-
-If `cache_exists` is false, say: *"No cache yet — first full scan, then `commit.mjs` will create it."*
-
-### B. Locale setup (when `user_config_using_defaults` is true)
-
-**Pause the sweep** and ask:
-
-> *"First-time work-radar setup — which office pattern?*
-> *1. **LATAM** — Mon–Fri, US federal holidays*
-> *2. **Tel Aviv** — Sun–Thu, Israel public holidays*
-> *Reply 1 or 2 (or tell me if both defaults are fine for now)."*
-
-When the user answers:
-
-1. Ensure `~/.claude/cache/` exists (`mkdir -p` on Mac/Linux; `New-Item -ItemType Directory -Force` on Windows).
-2. Write `run_plan.user_config_path` with:
-
-   ```json
-   { "work_week": "mon_fri", "holiday_region": "latam" }
-   ```
-
-   or Tel Aviv:
-
-   ```json
-   { "work_week": "sun_thu", "holiday_region": "il" }
-   ```
-
-3. **Re-run `prep.mjs`** with the same `--mode` and `--sprint-*` args from Step 1. Use the new run-plan for all following steps.
-
-If the user says defaults are fine, continue without writing the file — but say they can add
-`work-radar-user.json` later (see README).
-
-### C. Continue
-
-After setup (or user opt-out), proceed to Step 2. On `first_run`, the scan window is intentionally wide — that is expected.
+When `first_run` or `user_config_using_defaults`: confirm `skill_dir`, `user_config_path`, `cache_path`.
+If no user config, ask LATAM (1) vs Tel Aviv (2), write `work-radar-user.json`, re-run prep.
+If user accepts defaults, continue. Wide first-run window is expected.
 
 ---
 
-## Step 2 — Fast-exit vs full run
+## Step 2 — Routing
 
 ```
-fast_exit = true  → render-cache.mjs (save markdown) → Step 3 → Step 5 (query_sections only) → Step 6 (commit) → Step 7 (render) → Step 8
-fast_exit = false → skip render-cache → Step 3 → Step 4 → Step 5 (all sections) → Step 6 (commit) → Step 7 (render) → Step 8
+fast_exit → Step 3 → Step 5 (query_sections only) → 6 → 7 → 8
+full      → Step 3 → Step 4 → Step 5 (+ week ahead) → 6 → 7 → 8
 ```
 
-If `run_plan.fast_exit` is `true` (a re-run within 30 min of the same mode — never in `now`),
-run `render-cache.mjs` now and **save** the markdown for Step 7 — then **continue** to Step 3
-(do not stop, do not commit here):
-
-```
-node "{run_plan.skill_dir}/scripts/render-cache.mjs" --runplan <file with the prep.mjs output>
-```
-
-On fast-exit, Jira/Gmail/Fathom replay from cache; Slack and Bitbucket will be live-queried in
-Step 5 via `run_plan.query_sections`. If `fast_exit` is false, skip this step.
+Fast-exit: radar < 30 min; Jira/Gmail/Fathom replay from cache at render; Slack/Bitbucket live.
 
 ---
 
-## Step 3 — Identity (inline, parallel)
+## Step 3 — Identity (parallel)
 
-Small payloads — resolve inline (do NOT delegate). Run in parallel:
+1. `atlassianUserInfo` → `accountId`, `email`
+2. `slack_search_users` (email) → `user_id`
+3. `bb_get` `/2.0/user` → `uuid` (workspace **`mirudman`**)
+4. `Fathom get_identity` → confirm match
 
-1. `mcp__plugin_atlassian_atlassian__atlassianUserInfo` → `accountId`, `email`
-2. `mcp__claude_ai_Slack__slack_search_users` (user's email) → Slack `user_id`
-3. `mcp__plugin_team-mcps_bitbucket__bb_get` `/2.0/user` → `uuid` (workspace is **`mirudman`**)
-4. `mcp__claude_ai_Fathom__get_identity` → confirm name/email match
-
-Google Calendar and Gmail are OAuth-bound — no separate identity step.
+Gmail/Calendar are OAuth-bound.
 
 ---
 
-## Step 4 — Scope subagent (calendar pass)
+## Step 4 — Calendar scope
 
-Spawn ONE Haiku subagent (`Agent`, `model: haiku`) to run the calendar pass and return only a
-distilled scope — keeps raw calendar JSON out of this conversation. **Skip when `run_plan.fast_exit`
-is true** (Fathom discovery and PTO detection already ran on the prior full run; Week Ahead replays
-from cache). Also skip in `now` mode.
+**Skip** when `run_calendar_scope` is false.
 
-Point it at `{run_plan.skill_dir}/references/sections/calendar.md` and pass:
-`since.calendar`, `sprint`, `today`, `work_week`, `holiday_region`, `regional_holidays`, and
-any `slices` from the run-plan.
+Tool: `mcp__claude_ai_Google_Calendar__list_events` — params **`startTime`/`endTime`** only (not `timeMin`/`timeMax`).
 
-It returns: `recording_ids` (new, with titles/dates), `pto_dates`, `holiday_dates`, and a
-`calendar_events` cache delta, in the structured JSON contract (section `"calendar"`).
+**Two parallel fetches:**
+1. Backward: `startTime=since.calendar.start_time`, `endTime=now` — find Fathom meetings.
+2. Forward: `startTime=now`, `endTime=sprint.end` EOD (or +30d) — PTO discovery.
 
-Merge `pto_dates` + `holiday_dates` from the calendar return with `run_plan.regional_holidays`
-when handing PTO/holiday context to Week Ahead and Fathom subagents.
+**Fathom IDs (backward scan):** real meetings (not PTO) with video/Fathom link or attendees. Extract `recording_id` from URL or use `cal:{eventId}`. Skip if already in `calendar_events` cache with `processed_at`.
 
-Note: sprint work-day counts are in `run_plan.sprint_work_days_remaining` — computed by
-prep.mjs, never by a subagent.
+**Personal PTO (`pto_dates`):** all-day events with PTO/OOO/vacation/time-off language (incl. ferias, férias, חופש). Multi-day all-day blocks. NOT regional holidays, 1:1s, or short focus blocks.
+
+**Holidays (`holiday_dates`):** merge `regional_holidays` + company all-day events from forward scan.
+
+Return:
+```json
+{ "section": "calendar", "ok": true,
+  "recording_ids": [{ "recording_id", "title", "date", "event_id" }],
+  "pto_dates": ["YYYY-MM-DD"],
+  "holiday_dates": [{ "date", "name", "source": "regional"|"calendar" }],
+  "cache_delta": { "calendar_events": { "<event_id>": { "title", "date", "recording_id", "processed_at" } } },
+  "notes": [] }
+```
+
+Keep `recording_ids`, `pto_dates`, `holiday_dates` for Steps 5–6. Merge PTO/holidays with `regional_holidays`.
 
 ---
 
-## Step 5 — Section fan-out (Haiku subagents, parallel)
+## Step 5 — Section sweep
 
-For each section in `run_plan.query_sections`, spawn a Haiku subagent (`Agent`, `model: haiku`) in a
-**single message** so they run concurrently. Give each:
+For each section in `query_sections`, run the spec below. Inputs: identity from Step 3, `since` forms from run-plan, `slices`, `worklog` flag (Jira).
 
-- The path to its brief:
-  `{run_plan.skill_dir}/references/sections/{section}.md` (tell it to read and execute that brief).
-- Its `since` value **in the right form** from `run_plan.since` (jql_relative for Jira, epoch for
-  Gmail, unix for Slack), identity values, `today`, the `worklog` flag (Jira), and its **lean
-  cache slice** from `run_plan.slices` (e.g. `slices.gmail`, `slices.jira_comments`).
-- For Fathom: the new `recording_id`s from Step 4 plus `slices.fathom_unresolved` (structured
-  `{ text, status }` items — prep already filtered to non-done).
+**Fathom:** `recording_ids` from Step 4 + `slices.fathom_unresolved`.
+**Week ahead:** when `run_week_ahead`, run **Week Ahead** section below; set `week_ahead_render`.
 
-Sections narrow only their **time-windowed** queries to `since`; each keeps its cheap
-**current-state** query at full breadth (the briefs spell out which is which) so still-open items
-are never dropped.
+Independent sections may run MCP in parallel; always one JSON object per section in `returns`.
 
-For modes with Week Ahead (`week_ahead` ≠ `none`), also spawn the **Week-Ahead** subagent against
-`{run_plan.skill_dir}/references/week-ahead.md` — **unless `run_plan.fast_exit` is true** (use
-`week_ahead_render` from the run-plan instead). When spawning, pass `sprint`, `run_plan.sprint_work_days_remaining`,
-`run_plan.sprint_work_days_total`, `run_plan.week`, `run_plan.work_week`, `run_plan.next_work_week_start`,
-merged PTO/holiday dates, and accountId. It returns its rendered block in `week_ahead_render`.
+---
 
-### Structured return contract (every subagent returns ONLY this JSON)
+## Step 6 — commit.mjs
+
+```bash
+node "{skill_dir}/scripts/commit.mjs" --profile <profile> --run-start <run_start_iso> --returns <file>
+```
+
+Before render. Before Fathom↔Jira prompts. Failed sections (`ok:false`) don't advance coverage.
+
+---
+
+## Step 7 — render-report.mjs
+
+```bash
+node "{skill_dir}/scripts/render-report.mjs" --runplan <runplan.json> --returns <returns.json>
+```
+
+Print stdout **verbatim**. No cache footer in report body.
+
+---
+
+## Step 8 — Fathom↔Jira (optional)
+
+Skip when `fast_exit`. After report, if Fathom return has `potential_jira_matches`, ask yes/no/skip per match.
+On yes: `node "{skill_dir}/scripts/patch-fathom-jira.mjs" --recording-id … --fathom-item "…" --jira-key … --fathom-url "…" --cache <cache_path>`
+
+---
+
+## Returns contract (all sections)
 
 ```json
-{ "section": "gmail", "ok": true,
-  "flagged": [ { "emoji": "🔴", "who": "…", "why": "…", "action": "…", "link": "…" } ],
-  "cache_delta": { "gmail_threads": { "<id>": { "status": "pending", "card": "🔴 … · <link>", "processed_at": "2026-06-24T06:40:41.664Z" } } },
+{ "section": "<name>", "ok": true,
+  "flagged": [{ "emoji": "🔴", "who": "…", "why": "…", "action": "…", "link": "…" }],
+  "cache_delta": {},
   "week_ahead_render": null,
   "notes": [] }
 ```
 
-**Timestamp rule:** ALL timestamps in `cache_delta` (e.g. `processed_at`, `last_seen_comment_at`) must use UTC Zulu ISO format: `2026-06-24T06:40:41.664Z`. Never emit offset suffixes like `-03:00`.
-
-- `ok:false` (or a dead/empty subagent) → that section shows `⚠️ Could not check`, and
-  `commit.mjs` will NOT advance that source's coverage (so the next run re-scans the gap).
-- The `card` string on a flagged item is what lets it re-render for free next run — subagents
-  must include it when they set a `pending`/`open_card` entry.
+`ok: false` → `notes` has reason; section shows ⚠️. Include `card` on new pending/open_card entries for free re-render.
 
 ---
 
-## Step 6 — Commit the cache (replaces all merge/write math)
+# Section specs
 
-Collect every subagent's structured JSON into a single JSON array, write it to a temp file, then:
+### Jira
+
+**Tool:** `searchJiraIssuesUsingJql` — **ToolSearch** `select:mcp__plugin_atlassian_atlassian__searchJiraIssuesUsingJql` first.
+
+**Inputs:** `accountId`, `today`, `since.jira.jql_relative`, `worklog`, `slices.jira_comments`.
+
+**Always run:**
+1. `assignee = currentUser() AND duedate <= now() AND status != Done ORDER BY duedate ASC`
+2. `assignee = currentUser() AND priority in (High, Blocker) AND status not in (Done, Closed)`
+3. Re-emit unanswered `open_card` from slice.
+
+**Since-windowed:**
+4. `assignee = currentUser() AND updatedDate >= "{since.jql_relative}"` — flag only if last comment NOT from you AND newer than `last_seen_comment_at`. Update `cache_delta.jira_comments` with `last_seen_comment_at` + `open_card`; clear `open_card: null` when you replied last.
+5. Blocking links (`issueLinkType = "blocks"`) — skip gracefully if unsupported.
+
+**Links:** verbatim API URL (`https://getjones.atlassian.net/browse/{key}`) — never truncate.
+
+**Worklog** (if `worklog`): `worklogAuthor = currentUser() AND worklogDate = "{today}"`, fields `summary,worklog`. Sum `worklog.worklogs` where author is you and `started` starts with today (NOT `fields.timespent`). ≥28800s → ✅ Full day; 0 → 🔴 No worklog; between → 🔴 Partial.
+
+```json
+{ "section": "jira", "ok": true,
+  "worklog": "✅ Full day logged (8h) | 🔴 Partial — … | 🔴 No worklog entries for today",
+  "worklog_breakdown": [{ "key": "JON-123", "logged": "2h 0m" }],
+  "flagged": [...], "cache_delta": { "jira_comments": { ... } }, "notes": [] }
+```
+
+---
+
+### Slack
+
+**Tools:** `slack_search_public_and_private`, `slack_read_channel`, `slack_read_thread`.
+
+**Inputs:** `user_id`, `since.slack.unix`.
+
+**Always (not time-windowed):**
+- `to:me is:dm is:unread` → **MUST `slack_read_channel` each DM** (never `read_thread` for DMs). Flag only if no message from you with `ts` > triggering msg. Search alone causes false positives.
+- `is:starred` → flag for action.
+
+**Since-windowed** (`after` = `since.unix` param):
+- `@{user_id}` mentions → `read_thread`; flag only if you haven't replied after mention.
+- `from:me ("I'll" OR "I will" OR "let me" OR "I can send" OR "will check" OR "I'll get back")` → flag open commitments with no follow-through.
+
+Deduplicate overlaps. Include `ts` (unix int) on each flagged item; filter `ts >= since.unix` for windowed items. `cache_delta: {}`.
+
+---
+
+### Gmail
+
+**Tools:** `search_threads`, `get_thread` (MCP only — no REST).
+
+**Inputs:** `since.gmail.epoch`, your email, `slices.gmail_threads`.
+
+**Gap:** `after:<since.epoch> -in:sent -in:draft`. Skip `recently_dismissed_ids`.
+
+**Re-surface:** pending threads → re-flag unless gap search shows you as latest sender → then `cache_delta` clear (`null` or `actioned`).
+
+**New flags** (all true): latest msg from someone else; you're in **To:** (not CC); question language (`?`, could you, please, let me know…); not noreply/automated.
+
+New pending entries need `card` + `processed_at` in `cache_delta.gmail_threads`.
+
+---
+
+### Bitbucket
+
+**Tool:** `bb_get`. **Inputs:** your `uuid`. Workspace **`mirudman`**. No `since` — always live current state.
+
+**Repos (parallel):** `wjreactbackend`, `wjreact`, `node-backend`, `ai-tools`.
+
+Per repo, parallel:
+1. **Review queue:** `q=state="OPEN" AND reviewers.uuid="{uuid}"` — skip if your participant role is `approved`.
+2. **Your PRs:** `q=state="OPEN" AND author.uuid="{uuid}"` — if `comment_count > 0`, fetch last 10 comments; flag unresolved reviewer comments newer than your last reply. Flag merge conflicts.
+
+`cache_delta: {}`.
+
+---
+
+### Fathom
+
+**Tool:** `get_meeting_summary`. **Inputs:** `recording_ids` (Step 4), `slices.fathom_unresolved`, your name/email.
+
+**New recordings:** fetch summary; extract your action items as `{ text, status: pending|in_progress|done }`; `cache_delta.fathom_meetings` with `processed_at`.
+
+**Jira match (new items):** keyword search `project = JON AND text ~ "…"` (limit 5); add to `potential_jira_matches` if high/medium confidence — don't force.
+
+**Cached unresolved:** re-flag from `unresolved_items` without re-fetch.
+
+---
+
+# Week Ahead
+
+When `run_week_ahead`. Skip pace block if `sprint.note` set.
+
+**Sprint health JQL:** `assignee = currentUser() AND sprint in openSprints() AND status not in (Done, Closed) ORDER BY priority DESC`
+
+Collect: key, summary, status, priority, story points (try `customfield_10016` — if absent, treat as unavailable), `timeoriginalestimate`, `timeestimate`, `duedate`.
+
+**Capacity:** `sprint_work_days_remaining` × 8h (minus PTO/holiday days in window) from run-plan — **do not recompute**. Sum `timeestimate` → ratio vs capacity: ≤0.75 ✅, 0.75–1.0 🟡, >1.0 🔴, missing estimates → ⚠️ Pace unknown.
+
+**Due this week JQL:** `assignee = currentUser() AND duedate >= now() AND duedate <= "{last work day or next_work_week_start}" AND status not in (Done, Closed)`
+
+**Calendar:** `list_events` with `startTime=now`, `endTime` = last date in `week.work_days` (minus PTO/holidays) or `next_work_week_start`. Accepted/tentative only; exclude PTO/holidays; skip past Fathom meetings already cached.
+
+**Today is mandatory:** if `today` is a work day, always render `**Today — {day}**` with meetings from now through EOD — clock times from `start.dateTime` in local TZ (`Title · 1:00 PM`). Never title-only when `dateTime` exists. Never write "nothing scheduled" unless API returned zero events that day. `endTime` must cover the full horizon.
+
+**Horizon:** `week.work_days` minus PTO/holidays. If none left → "Today is your last work day"; shift to `next_work_week_start`.
+
+**Urgency by work days until due:** 0 🔴 bold, 1 🟡 bold, 2 🟡, 3 plain, 4+ subtle (only if High/Blocker, duedate, or owned meeting). PTO due dates: note *you're off that day*.
+
+**Output** → `week_ahead_render` (markdown string):
 
 ```
-node "{run_plan.skill_dir}/scripts/commit.mjs" --mode <mode> --run-start <run_plan.run_start_iso> --returns <file>
-```
-
-Run this **before** rendering the report (Step 7) so commit output appears in the terminal
-immediately above the final checklist. Read the stderr line (`commit.mjs: wrote …; coverage
-advanced for […]; last_run[…]=…`) — you will echo a summary of it at the bottom of the report.
-
-Commit **before** asking about Fathom matches — unconfirmed matches stay `pending` in cache.
-It merges every `cache_delta`, advances `coverage` only for sections with `ok:true` (failed
-sections self-heal next run), stamps `last_run[mode]`, preserves unknown keys (e.g. `merged_prs`),
-and writes atomically. Single writer = no partial-write or concurrency problems.
-
----
-
-## Step 7 — Synthesize and output
-
-**Fast-exit (`run_plan.fast_exit` is true):** Print the saved `render-cache.mjs` markdown block
-first, then append live Slack and Bitbucket sections from the Step 5 subagent `flagged[]` arrays
-using the same section heading format below. Week Ahead is already in the cache block if present.
-
-**Full run:** Render all collected `flagged[]` arrays into the template below.
-
-Show all sections the mode includes, even when green. Lead with the mode and date (from the
-run-plan). Adapt framing per the mode table. This step is the **last** user-visible artifact —
-deliver it after Step 6 so the report stays at the bottom of the conversation.
-
-```
-## Work Radar ({mode}) — {today}, {day_of_week}
-{window line, e.g. "Scanning since {since.*.iso}"}
-{optional: work week line, e.g. "Work week: Sun–Thu (Tel Aviv) · Holidays: IL"}
-
-### Jira {✅ or 🔴}
-{WORKLOG line + per-issue breakdown — only if worklog ran}
-{flagged ticket items, or "✅ No urgent tickets or unanswered comments."}
-
-### Slack {✅ or 🔴}
-{flagged items, or "✅ No unread messages, mentions, or open commitments."}
-
-### Bitbucket {✅ or 🔴}
-{flagged items, or "✅ No PRs waiting on you."}
-
-### Gmail {✅ or 🔴}
-{flagged items, or "✅ No emails waiting for a reply."}
-
-### Meetings / Fathom {✅ or 🔴}
-{flagged action items, or "✅ No unresolved action items from recent meetings."}
-
----
-{summary: "✅ All clear — nothing needs you." OR "🔴 {N} items need attention."}
-
----
-
 ### Week Ahead
-{rendered by the Week-Ahead subagent per references/week-ahead.md — include for modes with Week Ahead}
-
----
-Cache saved — coverage advanced for [{sections from commit stderr}]; last_run[{mode}]={run_start_iso}
+#### Sprint Health — {name}, ends {end}
+{sprint_work_days_remaining} of {sprint_work_days_total} work days left
+{pace signal + open tickets + hours}
+**Tickets to finish this sprint** (In Progress first, then priority × remaining estimate)
+**Today — {day}** (required on work days)
+**Tomorrow — {day}**
+**{next work day}**
+**Later this week** (omit if ≤1 work day left)
+**Next Work Week** (when today is last work day or cross-week items)
 ```
 
-**Deliver the full report now** — do not wait for Fathom↔Jira confirmations before showing this.
+If nothing ahead: `✅ Nothing on the horizon — clear week ahead.`
 
----
-
-## Step 8 — Fathom↔Jira confirmations (optional, non-blocking)
-
-**Skip when `run_plan.fast_exit` is true** — the Fathom subagent did not run.
-
-After Step 6 (cache committed) and Step 7 (report delivered), check whether the Fathom subagent
-return included any `potential_jira_matches` (non-empty array). If so, append a short footer:
-
-> *"{N} Fathom action item(s) may match Jira tickets — reply yes / no / skip on each when ready."*
-
-Then present each match **one at a time** (user can respond now or later in the same conversation):
-
-> *"Fathom action item: '[fathom_item]' — does this match [jira_key]: [jira_summary]? (yes / no / skip)"*
-
-For each **confirmed** match (user answers "yes"), run the patch script — do not hand-edit cache JSON:
-
+```json
+{ "section": "week_ahead", "ok": true, "flagged": [],
+  "week_ahead_render": "<full ### Week Ahead block>",
+  "cache_delta": {}, "notes": [] }
 ```
-node "{run_plan.skill_dir}/scripts/patch-fathom-jira.mjs" \
-  --recording-id <fathom_recording_id> \
-  --fathom-item "<fathom_item>" \
-  --jira-key <jira_key> \
-  --fathom-url "<fathom_url>" \
-  --cache <run_plan.cache_path>
-```
-
-It marks the action item `done` (text unchanged) and appends the Fathom URL to `jira_comments[jira_key].fathom_links`. It does not touch coverage or `last_run`.
-
-For **denied** matches ("no" or "skip"), do nothing — the action item stays unlinked.
-
-Never block the Work Radar report on these answers.
 
 ---
 
-## Handling failures gracefully
+## Failures
 
-If any section's subagent fails (auth error, timeout, API limit, or empty/`ok:false` return):
-- Show that section as `⚠️ Could not check — {brief reason from its notes}`.
-- Continue with all other sections; never abort the whole sweep.
-- `commit.mjs` still writes succeeded sections and leaves the failed source's coverage untouched.
+Any section `ok: false` or MCP error → ⚠️ for that section only; continue sweep. Commit succeeded sections.

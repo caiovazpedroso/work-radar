@@ -41,45 +41,46 @@ No `npm install` needed — the scripts use only Node.js built-ins. You need Nod
 
 ## Usage
 
-In any Claude Code conversation, trigger with natural phrasing — or invoke `/work-radar` with no
-mode (see **Default mode** below).
+In any Claude Code conversation, trigger with natural phrasing — or invoke `/work-radar`.
 
 ### Trigger phrases
 
-| You say | Mode |
-|---------|------|
-| "EOD check", "am I clear to log off?", "wrapping up" | `eod` |
-| "morning check", "what's on my plate?", "standup prep" | `morning` |
-| "anything urgent?", "what needs me right now?" | `now` |
-| "what's my week look like?", "week ahead", "sprint check" | `week` |
-| "catch me up", "back from PTO", "what did I miss" | `catchup` |
+| You say | Profile |
+|---------|---------|
+| "work radar", "what's on my plate?", "am I clear to log off?", "week ahead" | `radar` |
+| "quick check", "anything urgent?", "what needs me right now?" | `light` |
 
-### Modes
+### Profiles
 
-Each mode tunes the scan window, which sources are checked, and how the report is framed.
-See [SKILL.md](SKILL.md) for the full agent workflow.
+| Profile | What it does |
+|---------|----------------|
+| `radar` (default) | Full live sweep: Jira, Slack, Bitbucket, Gmail, Fathom, calendar scope, Week Ahead. Worklog checked; anchor can say "good to log off" after 15:00 local. |
+| `light` | Live Jira/Slack/Bitbucket only; Gmail, Fathom, and Week Ahead read from cache (urgent digest). |
 
-| Mode | Window cap | Sections | Week Ahead | Worklog | Framing |
-|------|------------|----------|-----------|---------|---------|
-| `eod` | last 3d | all | yes (heads-up) | yes (did I log ~8h?) | "clear to log off?" |
-| `morning` | last 3d | all, framed "needs you today" | today + tomorrow only | today's target | "here's your day" |
-| `now` | last 1d | Slack DMs/mentions, Bitbucket review queue, urgent Jira (light) | none | no | "what needs you right now" |
-| `week` | this week → sprint end | Jira due/urgent only | yes (primary, full detail) | no | "plan the week" |
-| `catchup` | last 14d | all, wider window | yes | no | "what happened while you were out" |
+**Scan window:** driven by cache — frequent runs only fetch since your last check (up to 14-day cap on first run or long gap). You don't pick a window.
 
-### Default mode
+**Report:** `render-report.mjs` prints markdown with status emoji (🔴 🟡 ✅ ⚠️). The **last line** is the actionable anchor; scroll up for inbox detail and Week Ahead. Cache commit status is stderr only (not repeated in the report).
 
-When you do not name a mode explicitly:
+See [SKILL.md](SKILL.md) for the full workflow — one file, one agent, inline MCP passes; scripts handle prep/commit/render.
 
-1. **First run** (no `~/.claude/cache/work-radar-cache.json` yet) → always `catchup` — a full
-   14-day sweep across every source, regardless of time of day.
-2. **After that** → time of day: morning hours → `morning`, late afternoon/evening → `eod`,
-   otherwise → `now`.
+### Default profile
+
+When you do not name a profile:
+
+1. **First run** (no `~/.claude/cache/work-radar-cache.json`) → `radar`
+2. **Otherwise** → `radar`, unless phrasing matches light triggers above
 
 ### Fast-exit
 
-Re-running the **same mode** within 30 minutes replays Jira, Gmail, and Fathom from the local
-cache and only live-queries Slack and Bitbucket. Use `now` mode to force a lighter full refresh.
+Re-running **`radar`** within 30 minutes replays Jira, Gmail, and Fathom from cache and only live-queries Slack and Bitbucket. Use a full `radar` run to refresh everything.
+
+### Scripts
+
+```bash
+node scripts/prep.mjs --profile radar
+node scripts/commit.mjs --profile radar --run-start <iso> --returns returns.json
+node scripts/render-report.mjs --runplan runplan.json --returns returns.json
+```
 
 ## Locale examples
 

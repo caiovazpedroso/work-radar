@@ -1,6 +1,6 @@
 /**
  * work-radar — regional holiday calendars for Jones offices.
- * PTO is per-user and comes from Google Calendar (calendar subagent), not here.
+ * PTO is per-user and comes from Google Calendar (calendar pass), not here.
  */
 
 import fs from 'node:fs';

@@ -6,32 +6,18 @@
  * date or JSON math. Emits ONE run-plan JSON object on stdout.
  *
  * Usage:
- *   node prep.mjs --mode <eod|morning|now|week|catchup> [--cache <path>] [--now <iso>]
+ *   node prep.mjs --profile <radar|light> [--cache <path>] [--now <iso>]
  *
+ *   --profile defaults to radar. Legacy --mode accepted as alias.
  *   --now is for testing only (pins "current time"); omit in real runs.
- *
- * Requirements: Node 16+ (ESM), no external dependencies.
- *
- * What it does:
- *   1. Resolve dates/day-of-week and this week's work days — per-user work-week
- *      (Mon–Fri for LATAM, Sun–Thu for Tel Aviv) in the system's local timezone.
- *      Regional holidays loaded from references/holidays/{region}.json.
- *      Sprint dates come from --sprint-start/--sprint-end args (resolved from Jira by Step 0).
- *   2. Load the cache, prune stale entries by TTL, and SEED `coverage` from `last_run` the
- *      first time so narrowing works on run #1. Unknown top-level keys
- *      (e.g. merged_prs) are read and passed through untouched.
- *   3. Compute a per-source `since` cutoff = coverage_through - 15min, floored
- *      at now - mode_window, formatted to each API's needs (see SINCE below).
- *   4. Decide the fast-exit (mode != now and last run < 30min ago).
- *   5. Emit lean cache slices (only OPEN items each subagent must re-render).
  */
 
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  MODES, SECTION_COVERAGE, TTL_DAYS, OPEN_CARD_SECTIONS,
-  DEFAULT_CACHE, parseArgs, parseStamp, utcIso,
+  PROFILES, SECTION_COVERAGE, TTL_DAYS, OPEN_CARD_SECTIONS,
+  DEFAULT_CACHE, parseArgs, parseStamp, utcIso, resolveProfile,
 } from './lib/shared.mjs';
 import { loadCache } from './lib/cache.mjs';
 import { loadUserConfig } from './lib/userConfig.mjs';
@@ -43,17 +29,18 @@ import {
 
 const SKILL_DIR = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 
-// ── Constants ────────────────────────────────────────────────────────────────
-const LOCAL_OFFSET_MIN = -new Date().getTimezoneOffset(); // system timezone, DST-aware
-const OVERLAP_MIN = 15;                // safety re-scan before the high-water mark
-const FAST_EXIT_MIN = 30;              // re-run within this window → fast-exit (not in `now`)
+const LOCAL_OFFSET_MIN = -new Date().getTimezoneOffset();
+const OVERLAP_MIN = 15;
+const FAST_EXIT_MIN = 30;
 
-// ── Small date helpers (all explicit; no mental math anywhere) ────────────────
-
-/** Format a Date as the YYYY-MM-DD calendar date in the system's local timezone. */
 function localDateString(d) {
   const local = new Date(d.getTime() + LOCAL_OFFSET_MIN * 60000);
   return local.toISOString().slice(0, 10);
+}
+
+function localHour(d) {
+  const local = new Date(d.getTime() + LOCAL_OFFSET_MIN * 60000);
+  return local.getUTCHours();
 }
 
 function fail(msg) {
@@ -69,34 +56,41 @@ function pruneByTtl(cache, nowMs) {
     const stampField = key === 'jira_comments' ? 'last_seen_comment_at' : 'processed_at';
     for (const id of Object.keys(slice)) {
       const stamp = parseStamp(slice[id]?.[stampField]);
-      // Null stamp → keep (age unknown); fathom_meetings is never pruned.
       if (stamp && stamp.getTime() < cutoff) delete slice[id];
     }
   }
 }
 
-/** Backfill any MISSING coverage key from the most recent last_run of a mode
- *  that actually scanned that section.  Seeding from an unrelated mode's run
- *  would set a false high-water mark and silently skip items in the gap on the
- *  next full run (e.g. a `week` run seeding gmail_through even though Gmail
- *  was never queried). */
 function seedCoverage(cache) {
   if (!cache.coverage) cache.coverage = {};
-  for (const [section, covKey] of Object.entries(SECTION_COVERAGE)) {
-    if (cache.coverage[covKey]) continue; // already set — never overwrite
-    const relevantRuns = Object.entries(cache.last_run || {})
-      .filter(([m]) => MODES[m]?.sections?.includes(section))
-      .map(([, ts]) => parseStamp(ts))
-      .filter(Boolean)
-      .map((d) => d.getTime());
-    if (relevantRuns.length) {
-      cache.coverage[covKey] = utcIso(new Date(Math.max(...relevantRuns)));
-    }
+  const allRuns = Object.values(cache.last_run || {})
+    .map(parseStamp)
+    .filter(Boolean)
+    .map((d) => d.getTime());
+  const maxRun = allRuns.length ? Math.max(...allRuns) : null;
+  if (!maxRun) return;
+  for (const covKey of Object.values(SECTION_COVERAGE)) {
+    if (cache.coverage[covKey]) continue;
+    cache.coverage[covKey] = utcIso(new Date(maxRun));
   }
 }
 
-// ── since computation ──────────────────────────────────────────────────────────
-/** Returns the since INSTANT (Date) for a coverage key, floored at now-window. */
+function computeWindowDays(cache, nowMs, firstRun, profile) {
+  const cfg = PROFILES[profile];
+  if (firstRun) return cfg.firstRunWindowDays;
+  if (profile === 'light') return cfg.windowDaysMax;
+
+  const candidates = [
+    ...Object.values(cache.coverage || {}).map(parseStamp),
+    parseStamp(cache.last_run?.radar),
+  ].filter(Boolean).map((d) => d.getTime());
+
+  if (!candidates.length) return cfg.firstRunWindowDays;
+  const oldest = Math.min(...candidates);
+  const gapDays = (nowMs - oldest) / 86400000;
+  return Math.min(cfg.windowDaysMax, Math.max(cfg.windowDaysMin, Math.ceil(gapDays)));
+}
+
 function sinceInstant(cache, coverageKey, nowMs, windowDays) {
   const cov = parseStamp(cache.coverage?.[coverageKey]);
   const floor = nowMs - windowDays * 86400000;
@@ -104,15 +98,11 @@ function sinceInstant(cache, coverageKey, nowMs, windowDays) {
   return new Date(Math.max(fromCov, floor));
 }
 
-// ── Lean slices (only OPEN items the subagents must re-render) ─────────────────
 function isFathomItemOpen(item) {
-  // item is { text: string, status: 'pending' | 'in_progress' | 'done' }
   return item.status !== 'done';
 }
 
 function buildSlices(cache, sinceMap) {
-  // Gmail: only pending entries (+ recently-dismissed ids so the gap search
-  // does not re-flag something dismissed after `since`).
   const gmailPending = {};
   const recentlyDismissed = [];
   const gmailSince = sinceMap.gmail.getTime();
@@ -126,7 +116,6 @@ function buildSlices(cache, sinceMap) {
     }
   }
 
-  // Fathom: meetings with any unresolved action item.
   const fathomUnresolved = {};
   for (const [rid, m] of Object.entries(cache.fathom_meetings || {})) {
     const items = (m.action_items_for_me || []).filter(isFathomItemOpen);
@@ -137,12 +126,11 @@ function buildSlices(cache, sinceMap) {
 
   return {
     gmail: { pending: gmailPending, recently_dismissed_ids: recentlyDismissed },
-    jira_comments: cache.jira_comments || {}, // small; passed whole for comment dedup
+    jira_comments: cache.jira_comments || {},
     fathom_unresolved: fathomUnresolved,
   };
 }
 
-// ── Open cards (for fast-exit render + reference) ──────────────────────────────
 function buildOpenCards(cache, slices) {
   const gmail = [];
   for (const [id, e] of Object.entries(slices.gmail.pending)) {
@@ -156,19 +144,17 @@ function buildOpenCards(cache, slices) {
   return { gmail, jira, fathom };
 }
 
-// ── Main ───────────────────────────────────────────────────────────────────────
 function main() {
   const args = parseArgs(process.argv.slice(2));
-  const mode = args.mode;
-  if (!mode || !MODES[mode]) fail(`--mode must be one of ${Object.keys(MODES).join(', ')}`);
-  const cfg = MODES[mode];
+  const profile = resolveProfile(args);
+  if (!profile) fail(`--profile must be one of ${Object.keys(PROFILES).join(', ')}`);
+  const cfg = PROFILES[profile];
   const cachePath = args.cache || DEFAULT_CACHE;
 
   const nowDate = args.now ? parseStamp(args.now) : new Date();
   if (!nowDate) fail('--now is not a parseable timestamp');
   const nowMs = nowDate.getTime();
 
-  // 1. User locale + dates / week / sprint
   const userConfig = loadUserConfig(args['user-config']);
   const workWeekPreset = getWorkWeekPreset(userConfig.work_week);
   const today = localDateString(nowDate);
@@ -178,15 +164,6 @@ function main() {
     ? { name: args['sprint-name'] || null, start: args['sprint-start'], end: args['sprint-end'] }
     : { note: 'sprint data unavailable' };
 
-  const holidayRangeEnd = sprint?.end || addDays(today, cfg.windowDays + 14);
-  const holidayRangeStart = sprint?.start || addDays(today, -cfg.windowDays);
-  const regionalHolidays = loadRegionalHolidays(
-    userConfig.holiday_region,
-    holidayRangeStart,
-    holidayRangeEnd,
-  );
-
-  // 2. Cache
   const cacheExists = fs.existsSync(cachePath);
   const cache = loadCache(cachePath);
   pruneByTtl(cache, nowMs);
@@ -194,6 +171,16 @@ function main() {
   const hasPriorRun = Object.keys(cache.last_run || {}).length > 0
     || Object.values(cache.coverage || {}).some(Boolean);
   const firstRun = !cacheExists || !hasPriorRun;
+  const effectiveWindowDays = computeWindowDays(cache, nowMs, firstRun, profile);
+
+  const holidayRangeEnd = sprint?.end || addDays(today, effectiveWindowDays + 14);
+  const holidayRangeStart = sprint?.start || addDays(today, -effectiveWindowDays);
+  const regionalHolidays = loadRegionalHolidays(
+    userConfig.holiday_region,
+    holidayRangeStart,
+    holidayRangeEnd,
+  );
+
   if (userConfig.using_defaults) {
     console.error(
       `prep.mjs: ${userConfig.config_path} not found — using LATAM Mon–Fri defaults; create user config before relying on Week Ahead holidays`,
@@ -201,19 +188,18 @@ function main() {
   }
   if (firstRun) {
     console.error(`prep.mjs: first run — cache will be created at commit (${cachePath})`);
-    if (mode === 'now') {
+    if (profile === 'light') {
       console.error(
-        'prep.mjs: warning — first run with mode "now" skips Gmail/Fathom/Week Ahead; SKILL recommends "catchup" on first run',
+        'prep.mjs: warning — first run with profile "light" has empty Gmail/Fathom/Week Ahead cache; run radar first for full coverage',
       );
     }
   }
 
-  // 3. since per source
   const sinceMap = {
-    gmail: sinceInstant(cache, 'gmail_through', nowMs, cfg.windowDays),
-    jira: sinceInstant(cache, 'jira_updates_through', nowMs, cfg.windowDays),
-    slack: sinceInstant(cache, 'slack_through', nowMs, cfg.windowDays),
-    calendar: sinceInstant(cache, 'calendar_scanned_through', nowMs, cfg.windowDays),
+    gmail: sinceInstant(cache, 'gmail_through', nowMs, effectiveWindowDays),
+    jira: sinceInstant(cache, 'jira_updates_through', nowMs, effectiveWindowDays),
+    slack: sinceInstant(cache, 'slack_through', nowMs, effectiveWindowDays),
+    calendar: sinceInstant(cache, 'calendar_scanned_through', nowMs, effectiveWindowDays),
   };
   const jiraMinutesAgo = Math.max(1, Math.round((nowMs - sinceMap.jira.getTime()) / 60000));
   const since = {
@@ -223,16 +209,19 @@ function main() {
     calendar: { start_time: utcIso(sinceMap.calendar), iso: utcIso(sinceMap.calendar) },
   };
 
-  // 4. fast-exit
-  const lastRun = parseStamp(cache.last_run?.[mode]);
+  const lastRun = parseStamp(cache.last_run?.radar);
   const minutesSinceLastRun = lastRun ? Math.round((nowMs - lastRun.getTime()) / 60000) : null;
-  const fastExit = cfg.fastExit && minutesSinceLastRun !== null && minutesSinceLastRun < FAST_EXIT_MIN;
+  const fastExit = profile === 'radar'
+    && cfg.fastExit
+    && minutesSinceLastRun !== null
+    && minutesSinceLastRun < FAST_EXIT_MIN;
   const fastExitLiveSections = fastExit
-    ? cfg.sections.filter((s) => !OPEN_CARD_SECTIONS.has(s))
+    ? cfg.liveSections.filter((s) => !OPEN_CARD_SECTIONS.has(s))
     : [];
-  const querySections = fastExit ? fastExitLiveSections : cfg.sections;
+  const querySections = fastExit ? fastExitLiveSections : cfg.liveSections;
+  const runCalendarScope = cfg.runCalendarScope && !fastExit;
+  const runWeekAhead = cfg.weekAhead !== 'none' && !fastExit;
 
-  // 5. Sprint work-day counts (user's work-week pattern)
   const sprintWorkDaysRemaining = sprint?.end
     ? countWorkDaysInRange(today, sprint.end, workWeekPreset.workDows)
     : null;
@@ -240,15 +229,15 @@ function main() {
     ? countWorkDaysInRange(sprint.start, sprint.end, workWeekPreset.workDows)
     : null;
 
-  // 6. slices + open cards
   const slices = buildSlices(cache, sinceMap);
   const openCards = buildOpenCards(cache, slices);
 
   const runPlan = {
     skill_dir: SKILL_DIR,
-    mode,
+    profile,
     now_iso: utcIso(nowDate),
     run_start_iso: utcIso(nowDate),
+    local_hour: localHour(nowDate),
     today, day_of_week: dow, week, sprint,
     work_week: workWeekPreset.id,
     work_week_label: workWeekPreset.label,
@@ -261,15 +250,17 @@ function main() {
     first_run: firstRun,
     sprint_work_days_remaining: sprintWorkDaysRemaining,
     sprint_work_days_total: sprintWorkDaysTotal,
-    sections: cfg.sections,
+    sections: cfg.liveSections,
     query_sections: querySections,
+    run_calendar_scope: runCalendarScope,
+    run_week_ahead: runWeekAhead,
     worklog: cfg.worklog,
     week_ahead: cfg.weekAhead,
     fast_exit: fastExit,
     fast_exit_live_sections: fastExitLiveSections,
-    fast_exit_reason: fastExit ? `ran ${mode} ${minutesSinceLastRun} min ago (<${FAST_EXIT_MIN})` : null,
+    fast_exit_reason: fastExit ? `ran radar ${minutesSinceLastRun} min ago (<${FAST_EXIT_MIN})` : null,
     minutes_since_last_run: minutesSinceLastRun,
-    window_days: cfg.windowDays,
+    window_days: effectiveWindowDays,
     overlap_min: OVERLAP_MIN,
     since,
     slices,

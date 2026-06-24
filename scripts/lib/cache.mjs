@@ -4,6 +4,7 @@
  */
 
 import fs from 'node:fs';
+import { parseStamp, utcIso } from './shared.mjs';
 
 const REQUIRED_CONTAINERS = {
   fathom_meetings: {},
@@ -40,10 +41,31 @@ function migrateFathomItems(cache) {
   }
 }
 
+/** One-time upgrade: fold legacy per-mode last_run keys into last_run.radar. */
+function migrateLastRunProfiles(cache) {
+  if (!cache.last_run || typeof cache.last_run !== 'object') {
+    cache.last_run = {};
+    return;
+  }
+  const existingRadar = parseStamp(cache.last_run.radar);
+  const legacyTimes = Object.entries(cache.last_run)
+    .filter(([key]) => key !== 'radar' && key !== 'light')
+    .map(([, ts]) => parseStamp(ts))
+    .filter(Boolean)
+    .map((d) => d.getTime());
+  if (!legacyTimes.length) return;
+  const maxLegacy = Math.max(...legacyTimes);
+  const radarTime = existingRadar ? existingRadar.getTime() : 0;
+  if (maxLegacy > radarTime) {
+    cache.last_run.radar = utcIso(new Date(maxLegacy));
+  }
+}
+
 /** Normalize in-memory cache shape after load (migrations, etc.). */
 export function normalizeCache(cache) {
   ensureCacheContainers(cache);
   migrateFathomItems(cache);
+  migrateLastRunProfiles(cache);
   return cache;
 }
 

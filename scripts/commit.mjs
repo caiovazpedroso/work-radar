@@ -2,13 +2,13 @@
 /**
  * work-radar — commit.mjs  (engine back-half, zero model involvement)
  * =================================================================
- * Merges the section subagents' structured returns into the cache, advances
+ * Merges the section returns' structured JSON into the cache, advances
  * each source's coverage high-water mark (only for sections that SUCCEEDED —
  * failed sections keep their old mark so the next run self-heals the gap),
  * stamps last_run, preserves unknown top-level keys, and writes atomically.
  *
  * Usage:
- *   node commit.mjs --mode <mode> --run-start <iso> --returns <returns.json> [--cache <path>]
+ *   node commit.mjs --profile <radar|light> --run-start <iso> --returns <returns.json> [--cache <path>]
  *
  *   commit.mjs only reads cache_delta, ok, and week_ahead_render from each return.
  *   flagged items are never persisted here — they are synthesized by the orchestrator directly.
@@ -23,7 +23,7 @@
  */
 
 import fs from 'node:fs';
-import { SECTION_COVERAGE, DEFAULT_CACHE, parseArgs, isPlainObject } from './lib/shared.mjs';
+import { SECTION_COVERAGE, DEFAULT_CACHE, parseArgs, isPlainObject, resolveProfile } from './lib/shared.mjs';
 import { loadCacheStrict } from './lib/cache.mjs';
 
 function fail(msg) {
@@ -33,7 +33,7 @@ function fail(msg) {
 
 /** Deep-merge src into dst: plain objects merge recursively; everything else
  *  (arrays, scalars, null) replaces. A null VALUE deletes the key (lets a
- *  subagent clear an open_card / resolve a pending thread). */
+ *  section clear an open_card / resolve a pending thread). */
 function deepMerge(dst, src) {
   for (const [k, v] of Object.entries(src)) {
     if (v === null) { delete dst[k]; continue; }
@@ -75,7 +75,7 @@ function mergeJiraComments(dstComments, srcComments) {
 
 function main() {
   const args = parseArgs(process.argv.slice(2));
-  const mode = args.mode || fail('--mode required');
+  const profile = resolveProfile(args) || fail('--profile must be radar or light');
   const runStart = args['run-start'] || fail('--run-start required');
   const returnsPath = args.returns || fail('--returns required');
   const cachePath = args.cache || DEFAULT_CACHE;
@@ -115,14 +115,14 @@ function main() {
     }
   }
 
-  cache.last_run[mode] = runStart;
+  cache.last_run[profile] = runStart;
 
   // Atomic write: temp file in the same dir, then rename.
   const tmp = cachePath + '.tmp';
   fs.writeFileSync(tmp, JSON.stringify(cache, null, 2) + '\n', 'utf8');
   fs.renameSync(tmp, cachePath);
 
-  console.error(`commit.mjs: wrote ${cachePath}; coverage advanced for [${advanced.join(', ') || 'none'}]; last_run[${mode}]=${runStart}`);
+  console.error(`commit.mjs: wrote ${cachePath}; coverage advanced for [${advanced.join(', ') || 'none'}]; last_run[${profile}]=${runStart}`);
 }
 
 main();
