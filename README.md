@@ -21,7 +21,23 @@ No `npm install` needed — the scripts use only Node.js built-ins. You need Nod
    - Mac/Linux: `~/.claude/skills/work-check/`
    - Windows: `%USERPROFILE%\.claude\skills\work-check\`
 
-2. That's it. The scripts pick up your timezone automatically from the OS clock.
+2. Configure your locale (one-time):
+
+   ```bash
+   mkdir -p ~/.claude/cache
+   cp ~/.claude/skills/work-check/references/user-config.example.json ~/.claude/cache/work-check-user.json
+   ```
+
+   Edit `~/.claude/cache/work-check-user.json`:
+
+   | Field | Values | Who |
+   |-------|--------|-----|
+   | `work_week` | `mon_fri` (default) or `sun_thu` | LATAM → Mon–Fri; Tel Aviv → Sun–Thu |
+   | `holiday_region` | `latam` or `il` | Office holidays (LATAM uses US federal calendar) |
+
+   **PTO is personal** — detected from your own Google Calendar, not this file.
+
+3. The scripts pick up your timezone automatically from the OS clock.
 
 ## Usage
 
@@ -36,3 +52,17 @@ In any Claude Code conversation, trigger with natural phrasing:
 | "catch me up", "back from PTO" | `catchup` — all sources, 14-day window |
 
 Or invoke explicitly: `/work-check` (defaults to mode based on time of day).
+
+## Locale examples
+
+**LATAM engineer** (Mon–Fri, US federal holidays):
+```json
+{ "work_week": "mon_fri", "holiday_region": "latam" }
+```
+
+**Tel Aviv engineer** (Sun–Thu, Israel public holidays):
+```json
+{ "work_week": "sun_thu", "holiday_region": "il" }
+```
+
+Holiday lists live in `references/holidays/` and are updated annually.

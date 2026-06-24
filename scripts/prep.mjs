@@ -13,8 +13,10 @@
  * Requirements: Node 16+ (ESM), no external dependencies.
  *
  * What it does:
- *   1. Resolve dates/day-of-week, this week's Mon–Fri, and the 2-week sprint
- *      window anchored Monday 2026-06-08 — all in the system's local timezone.
+ *   1. Resolve dates/day-of-week and this week's work days — per-user work-week
+ *      (Mon–Fri for LATAM, Sun–Thu for Tel Aviv) in the system's local timezone.
+ *      Regional holidays loaded from references/holidays/{region}.json.
+ *      Sprint dates come from --sprint-start/--sprint-end args (resolved from Jira by Step 0).
  *   2. Load the cache, prune stale entries by TTL, and SEED `coverage` from `last_run` the
  *      first time so narrowing works on run #1. Unknown top-level keys
  *      (e.g. merged_prs) are read and passed through untouched.
@@ -27,7 +29,17 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { homedir } from 'node:os';
+import {
+  MODES, SECTION_COVERAGE, TTL_DAYS, OPEN_CARD_SECTIONS,
+  DEFAULT_CACHE, parseArgs, parseStamp, utcIso,
+} from './lib/shared.mjs';
+import { loadCache } from './lib/cache.mjs';
+import { loadUserConfig } from './lib/userConfig.mjs';
+import { loadRegionalHolidays } from './lib/holidays.mjs';
+import {
+  getWorkWeekPreset, buildWorkWeek, countWorkDaysInRange,
+  nextWorkWeekStart, dayOfWeek, addDays,
+} from './lib/workWeek.mjs';
 
 const SKILL_DIR = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 
@@ -35,37 +47,8 @@ const SKILL_DIR = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const LOCAL_OFFSET_MIN = -new Date().getTimezoneOffset(); // system timezone, DST-aware
 const OVERLAP_MIN = 15;                // safety re-scan before the high-water mark
 const FAST_EXIT_MIN = 30;              // re-run within this window → fast-exit (not in `now`)
-const DEFAULT_CACHE = path.join(homedir(), '.claude', 'cache', 'work-check-cache.json');
-
-const MODES = {
-  eod:     { windowDays: 3,  sections: ['jira', 'slack', 'bitbucket', 'fathom', 'gmail'], worklog: true,  weekAhead: 'full', fastExit: true },
-  morning: { windowDays: 3,  sections: ['jira', 'slack', 'bitbucket', 'fathom', 'gmail'], worklog: true,  weekAhead: 'trim', fastExit: true },
-  now:     { windowDays: 1,  sections: ['slack', 'bitbucket', 'jira'],                    worklog: false, weekAhead: 'none', fastExit: false },
-  week:    { windowDays: 7,  sections: ['jira'],                                          worklog: false, weekAhead: 'full', fastExit: true },
-  catchup: { windowDays: 14, sections: ['jira', 'slack', 'bitbucket', 'fathom', 'gmail'], worklog: false, weekAhead: 'full', fastExit: true },
-};
-
-// Which coverage key each section advances (sections absent here are
-// cache-based or pure-state and own no coverage high-water mark).
-const SECTION_COVERAGE = {
-  gmail: 'gmail_through',
-  jira: 'jira_updates_through',
-  slack: 'slack_through',
-  calendar: 'calendar_scanned_through',
-};
-
-const TTL_DAYS = { gmail_threads: 7, jira_comments: 14, calendar_events: 7 };
 
 // ── Small date helpers (all explicit; no mental math anywhere) ────────────────
-
-/** Parse any timestamp we store: plain date, ISO+Z, ISO+offset, or Jira "+0300". */
-function parseStamp(s) {
-  if (!s) return null;
-  // Normalise a trailing "+HHMM"/"-HHMM" (no colon) into "+HH:MM" for Date().
-  const fixed = String(s).replace(/([+-]\d{2})(\d{2})$/, '$1:$2');
-  const d = new Date(fixed);
-  return Number.isNaN(d.getTime()) ? null : d;
-}
 
 /** Format a Date as the YYYY-MM-DD calendar date in the system's local timezone. */
 function localDateString(d) {
@@ -73,56 +56,9 @@ function localDateString(d) {
   return local.toISOString().slice(0, 10);
 }
 
-/** Day of week (Mon..Sun) for an SP calendar date string. */
-const DOW = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-function dayOfWeek(dateStr) {
-  // Treat the date as noon UTC to avoid any boundary ambiguity.
-  return DOW[new Date(dateStr + 'T12:00:00Z').getUTCDay()];
-}
-
-/** Add days to a YYYY-MM-DD string, returning YYYY-MM-DD. */
-function addDays(dateStr, n) {
-  const d = new Date(dateStr + 'T12:00:00Z');
-  d.setUTCDate(d.getUTCDate() + n);
-  return d.toISOString().slice(0, 10);
-}
-
-/** Format a Date as a UTC Zulu ISO string (e.g. 2026-06-24T06:40:41.664Z). */
-function utcIso(d) {
-  return d.toISOString(); // already produces Z suffix
-}
-
-
-// ── Args ──────────────────────────────────────────────────────────────────────
-function parseArgs(argv) {
-  const out = {};
-  for (let i = 0; i < argv.length; i++) {
-    if (argv[i].startsWith('--')) out[argv[i].slice(2)] = argv[i + 1];
-  }
-  return out;
-}
-
 function fail(msg) {
   console.error(`prep.mjs: ${msg}`);
   process.exit(1);
-}
-
-// ── Cache load / migrate / prune ───────────────────────────────────────────────
-function loadCache(cachePath) {
-  let raw = null;
-  if (fs.existsSync(cachePath)) {
-    raw = fs.readFileSync(cachePath, 'utf8');
-  }
-  const base = {
-    fathom_meetings: {}, calendar_events: {}, gmail_threads: {},
-    jira_comments: {}, last_run: {}, coverage: {},
-  };
-  if (!raw) return base;
-  let parsed;
-  try { parsed = JSON.parse(raw); } catch { return base; }
-  // Ensure required containers exist without dropping unknown keys.
-  for (const k of Object.keys(base)) if (!(k in parsed)) parsed[k] = base[k];
-  return parsed;
 }
 
 function pruneByTtl(cache, nowMs) {
@@ -139,18 +75,23 @@ function pruneByTtl(cache, nowMs) {
   }
 }
 
-/** Backfill any MISSING coverage key from the most recent last_run, so a source
- *  that has never recorded coverage (first run, or one that failed last time)
- *  still narrows from the last run instead of re-scanning the whole window.
- *  eod/morning cover every source, so last_run is a safe high-water mark. */
+/** Backfill any MISSING coverage key from the most recent last_run of a mode
+ *  that actually scanned that section.  Seeding from an unrelated mode's run
+ *  would set a false high-water mark and silently skip items in the gap on the
+ *  next full run (e.g. a `week` run seeding gmail_through even though Gmail
+ *  was never queried). */
 function seedCoverage(cache) {
   if (!cache.coverage) cache.coverage = {};
-  const runs = Object.values(cache.last_run || {})
-    .map(parseStamp).filter(Boolean).map((d) => d.getTime());
-  if (!runs.length) return;
-  const seed = utcIso(new Date(Math.max(...runs)));
-  for (const k of Object.values(SECTION_COVERAGE)) {
-    if (!cache.coverage[k]) cache.coverage[k] = seed; // backfill only missing
+  for (const [section, covKey] of Object.entries(SECTION_COVERAGE)) {
+    if (cache.coverage[covKey]) continue; // already set — never overwrite
+    const relevantRuns = Object.entries(cache.last_run || {})
+      .filter(([m]) => MODES[m]?.sections?.includes(section))
+      .map(([, ts]) => parseStamp(ts))
+      .filter(Boolean)
+      .map((d) => d.getTime());
+    if (relevantRuns.length) {
+      cache.coverage[covKey] = utcIso(new Date(Math.max(...relevantRuns)));
+    }
   }
 }
 
@@ -165,9 +106,8 @@ function sinceInstant(cache, coverageKey, nowMs, windowDays) {
 
 // ── Lean slices (only OPEN items the subagents must re-render) ─────────────────
 function isFathomItemOpen(item) {
-  // Items carry a trailing status: "- DONE", "- DONE (…)", "- IN PROGRESS",
-  // "- PENDING". Anything marked DONE is resolved; everything else is open.
-  return !/\bDONE\b/i.test(item);
+  // item is { text: string, status: 'pending' | 'in_progress' | 'done' }
+  return item.status !== 'done';
 }
 
 function buildSlices(cache, sinceMap) {
@@ -189,7 +129,7 @@ function buildSlices(cache, sinceMap) {
   // Fathom: meetings with any unresolved action item.
   const fathomUnresolved = {};
   for (const [rid, m] of Object.entries(cache.fathom_meetings || {})) {
-    const items = (m.action_items_for_me || m.action_items || []).filter(isFathomItemOpen);
+    const items = (m.action_items_for_me || []).filter(isFathomItemOpen);
     if (items.length) {
       fathomUnresolved[rid] = { title: m.title, date: m.date, url: m.url, unresolved_items: items };
     }
@@ -228,25 +168,40 @@ function main() {
   if (!nowDate) fail('--now is not a parseable timestamp');
   const nowMs = nowDate.getTime();
 
-  // 1. Dates / week / sprint
+  // 1. User locale + dates / week / sprint
+  const userConfig = loadUserConfig(args['user-config']);
+  const workWeekPreset = getWorkWeekPreset(userConfig.work_week);
   const today = localDateString(nowDate);
   const dow = dayOfWeek(today);
-  const todayIdx = DOW.indexOf(dow);              // 0=Sun..6=Sat
-  const mondayOffset = todayIdx === 0 ? -6 : 1 - todayIdx; // Mon of current week
-  const monday = addDays(today, mondayOffset);
-  const week = {
-    monday,
-    friday: addDays(monday, 4),
-    work_days: [0, 1, 2, 3, 4].map((n) => addDays(monday, n)),
-  };
+  const week = buildWorkWeek(today, workWeekPreset);
   const sprint = (args['sprint-start'] && args['sprint-end'])
     ? { name: args['sprint-name'] || null, start: args['sprint-start'], end: args['sprint-end'] }
     : { note: 'sprint data unavailable' };
 
+  const holidayRangeEnd = sprint?.end || addDays(today, cfg.windowDays + 14);
+  const holidayRangeStart = sprint?.start || addDays(today, -cfg.windowDays);
+  const regionalHolidays = loadRegionalHolidays(
+    userConfig.holiday_region,
+    holidayRangeStart,
+    holidayRangeEnd,
+  );
+
   // 2. Cache
+  const cacheExists = fs.existsSync(cachePath);
   const cache = loadCache(cachePath);
   pruneByTtl(cache, nowMs);
   seedCoverage(cache);
+  const hasPriorRun = Object.keys(cache.last_run || {}).length > 0
+    || Object.values(cache.coverage || {}).some(Boolean);
+  const firstRun = !cacheExists || !hasPriorRun;
+  if (userConfig.using_defaults) {
+    console.error(
+      `prep.mjs: ${userConfig.config_path} not found — using LATAM Mon–Fri defaults; create user config before relying on Week Ahead holidays`,
+    );
+  }
+  if (firstRun) {
+    console.error(`prep.mjs: first run — cache will be created at commit (${cachePath})`);
+  }
 
   // 3. since per source
   const sinceMap = {
@@ -267,19 +222,18 @@ function main() {
   const lastRun = parseStamp(cache.last_run?.[mode]);
   const minutesSinceLastRun = lastRun ? Math.round((nowMs - lastRun.getTime()) / 60000) : null;
   const fastExit = cfg.fastExit && minutesSinceLastRun !== null && minutesSinceLastRun < FAST_EXIT_MIN;
+  const fastExitLiveSections = fastExit
+    ? cfg.sections.filter((s) => !OPEN_CARD_SECTIONS.has(s))
+    : [];
+  const querySections = fastExit ? fastExitLiveSections : cfg.sections;
 
-  // 5. Sprint work days remaining (today inclusive, through sprint end, Mon–Fri only)
-  const sprintWorkDaysRemaining = (() => {
-    if (!sprint?.end) return null;
-    let count = 0;
-    let cursor = today;
-    while (cursor <= sprint.end) {
-      const dow = new Date(cursor + 'T12:00:00Z').getUTCDay(); // 0=Sun,6=Sat
-      if (dow >= 1 && dow <= 5) count++;
-      cursor = addDays(cursor, 1);
-    }
-    return count;
-  })();
+  // 5. Sprint work-day counts (user's work-week pattern)
+  const sprintWorkDaysRemaining = sprint?.end
+    ? countWorkDaysInRange(today, sprint.end, workWeekPreset.workDows)
+    : null;
+  const sprintWorkDaysTotal = (sprint?.start && sprint?.end)
+    ? countWorkDaysInRange(sprint.start, sprint.end, workWeekPreset.workDows)
+    : null;
 
   // 6. slices + open cards
   const slices = buildSlices(cache, sinceMap);
@@ -291,11 +245,23 @@ function main() {
     now_iso: utcIso(nowDate),
     run_start_iso: utcIso(nowDate),
     today, day_of_week: dow, week, sprint,
+    work_week: workWeekPreset.id,
+    work_week_label: workWeekPreset.label,
+    holiday_region: userConfig.holiday_region,
+    regional_holidays: regionalHolidays,
+    next_work_week_start: nextWorkWeekStart(today, workWeekPreset),
+    user_config_path: userConfig.config_path,
+    user_config_using_defaults: userConfig.using_defaults,
+    cache_exists: cacheExists,
+    first_run: firstRun,
     sprint_work_days_remaining: sprintWorkDaysRemaining,
+    sprint_work_days_total: sprintWorkDaysTotal,
     sections: cfg.sections,
+    query_sections: querySections,
     worklog: cfg.worklog,
     week_ahead: cfg.weekAhead,
     fast_exit: fastExit,
+    fast_exit_live_sections: fastExitLiveSections,
     fast_exit_reason: fastExit ? `ran ${mode} ${minutesSinceLastRun} min ago (<${FAST_EXIT_MIN})` : null,
     minutes_since_last_run: minutesSinceLastRun,
     window_days: cfg.windowDays,

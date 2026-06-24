@@ -4,6 +4,8 @@ You are the **Jira** section of a personal work-surface sweep. Execute the queri
 
 **Tool:** `mcp__plugin_atlassian_atlassian__searchJiraIssuesUsingJql` (Jira Cloud, getjones site).
 
+**Setup (required first):** This tool is deferred — its schema is not pre-loaded. Before running any query, call `ToolSearch` with `query: "select:mcp__plugin_atlassian_atlassian__searchJiraIssuesUsingJql"` to load the schema. Only then call the tool directly. Do not skip this step or you will fail to invoke it.
+
 **Inputs handed to you:** `accountId`, `today` (YYYY-MM-DD), `since.jql_relative` (a relative JQL window like `"-885m"`), the `worklog` flag, and the `jira_comments` slice (`{ issue_key: { last_seen_comment_at, open_card } }`).
 
 ## Queries

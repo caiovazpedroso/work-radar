@@ -14,14 +14,7 @@
  */
 
 import fs from 'node:fs';
-
-function parseArgs(argv) {
-  const out = {};
-  for (let i = 0; i < argv.length; i++) {
-    if (argv[i].startsWith('--')) out[argv[i].slice(2)] = argv[i + 1];
-  }
-  return out;
-}
+import { parseArgs } from './lib/shared.mjs';
 
 function section(title, cards, emptyMsg) {
   const has = cards && cards.length;
@@ -41,14 +34,19 @@ function main() {
 
   const oc = plan.open_cards || {};
   const fathomCards = (oc.fathom || []).flatMap((m) =>
-    (m.unresolved_items || []).map((it) => `🔴 ${m.title} (${m.date}) — ${it} · ${m.url}`));
+    (m.unresolved_items || []).map((it) => {
+      const text = typeof it === 'string' ? it : it.text;
+      return `🔴 ${m.title} (${m.date}) — ${text} · ${m.url}`;
+    }));
 
-  const totalOpen = (oc.gmail?.length || 0) + (oc.jira?.length || 0) + fathomCards.length;
+  const cachedOpen = (oc.gmail?.length || 0) + (oc.jira?.length || 0) + fathomCards.length;
+  const liveSections = (plan.fast_exit_live_sections || []);
   const mins = plan.minutes_since_last_run;
 
   const out = [];
   out.push(`## Work Check (${plan.mode}) — ${plan.today}, ${plan.day_of_week}`);
-  out.push(`⏱️ Ran ${plan.mode} ${mins} min ago — nothing re-fetched. ${totalOpen} item(s) still open (as of last run).`);
+  const liveNote = liveSections.length ? `; ${liveSections.join(', ')} live-queried below` : '';
+  out.push(`⏱️ Ran ${plan.mode} ${mins} min ago — Jira/Gmail/Fathom from cache (${cachedOpen} open), Slack/Bitbucket queried live${liveNote}.`);
   out.push('');
   out.push(section('Jira', oc.jira, '✅ No open tickets carried from the last run.'));
   out.push('');
@@ -57,7 +55,7 @@ function main() {
   out.push(section('Meetings / Fathom', fathomCards, '✅ No unresolved action items carried from the last run.'));
   out.push('');
   out.push('---');
-  out.push(totalOpen ? `🔴 ${totalOpen} item(s) still open from the last run.` : '✅ All clear from the last run.');
+  out.push(cachedOpen ? `🔴 ${cachedOpen} cached item(s) still open (Slack/Bitbucket results below).` : '✅ No cached items open (check Slack/Bitbucket results below).');
 
   if (plan.week_ahead_render) {
     out.push('');
@@ -68,7 +66,7 @@ function main() {
   }
 
   out.push('');
-  out.push('*Fast-exit: re-run is recent, so sources were not re-queried. Run again later, or use `now` mode to force a live check.*');
+  out.push('*Fast-exit: Jira/Gmail/Fathom from cache; Slack/Bitbucket live-queried. Run `now` mode to force a full refresh.*');
 
   process.stdout.write(out.join('\n') + '\n');
 }

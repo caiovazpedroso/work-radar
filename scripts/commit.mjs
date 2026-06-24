@@ -10,6 +10,9 @@
  * Usage:
  *   node commit.mjs --mode <mode> --run-start <iso> --returns <returns.json> [--cache <path>]
  *
+ *   commit.mjs only reads cache_delta, ok, and week_ahead_render from each return.
+ *   flagged items are never persisted here — they are synthesized by the orchestrator directly.
+ *
  *   <returns.json> is a JSON array of section returns, each shaped:
  *     { "section": "gmail", "ok": true,
  *       "cache_delta": { "gmail_threads": { "<id>": {...} }, ... },
@@ -20,25 +23,8 @@
  */
 
 import fs from 'node:fs';
-import { join } from 'node:path';
-import { homedir } from 'node:os';
-
-const DEFAULT_CACHE = join(homedir(), '.claude', 'cache', 'work-check-cache.json');
-
-const SECTION_COVERAGE = {
-  gmail: 'gmail_through',
-  jira: 'jira_updates_through',
-  slack: 'slack_through',
-  calendar: 'calendar_scanned_through',
-};
-
-function parseArgs(argv) {
-  const out = {};
-  for (let i = 0; i < argv.length; i++) {
-    if (argv[i].startsWith('--')) out[argv[i].slice(2)] = argv[i + 1];
-  }
-  return out;
-}
+import { SECTION_COVERAGE, DEFAULT_CACHE, parseArgs, isPlainObject } from './lib/shared.mjs';
+import { loadCacheStrict } from './lib/cache.mjs';
 
 function fail(msg) {
   console.error(`commit.mjs: ${msg}`);
@@ -87,26 +73,18 @@ function mergeJiraComments(dstComments, srcComments) {
   }
 }
 
-function isPlainObject(x) {
-  return x !== null && typeof x === 'object' && !Array.isArray(x);
-}
-
 function main() {
   const args = parseArgs(process.argv.slice(2));
   const mode = args.mode || fail('--mode required');
   const runStart = args['run-start'] || fail('--run-start required');
   const returnsPath = args.returns || fail('--returns required');
   const cachePath = args.cache || DEFAULT_CACHE;
-  const sinceSlackUnix = args['since-slack-unix'] != null ? Number(args['since-slack-unix']) : null;
 
-  let cache = {};
-  if (fs.existsSync(cachePath)) {
-    try { cache = JSON.parse(fs.readFileSync(cachePath, 'utf8')); }
-    catch { fail('existing cache is not valid JSON; refusing to overwrite'); }
-  }
-  // Ensure containers without dropping unknown keys (e.g. merged_prs).
-  for (const k of ['fathom_meetings', 'calendar_events', 'gmail_threads', 'jira_comments', 'last_run', 'coverage']) {
-    if (!cache[k]) cache[k] = {};
+  let cache;
+  try {
+    cache = loadCacheStrict(cachePath);
+  } catch (e) {
+    fail(e.message);
   }
 
   let returns;
@@ -117,16 +95,6 @@ function main() {
   const advanced = [];
   for (const r of returns) {
     if (!r || typeof r !== 'object') continue;
-
-    // Filter stale Slack flagged items that arrived before the scan window.
-    if (r.section === 'slack' && sinceSlackUnix !== null && Array.isArray(r.flagged)) {
-      const before = r.flagged.length;
-      r.flagged = r.flagged.filter((item) => item.ts == null || item.ts >= sinceSlackUnix);
-      const dropped = before - r.flagged.length;
-      if (dropped > 0) {
-        console.error(`commit.mjs: dropped ${dropped} stale Slack item(s) (ts < since)`);
-      }
-    }
 
     if (r.cache_delta && isPlainObject(r.cache_delta)) {
       // Handle jira_comments separately so fathom_links arrays are appended, not replaced.

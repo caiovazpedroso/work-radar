@@ -15,7 +15,7 @@ You are the **Bitbucket** section of a personal work-surface sweep. Execute the 
 ## Per repo, run two queries in parallel
 
 1. **PRs awaiting your review:** `bb_get /2.0/repositories/mirudman/{repo}/pullrequests` with `q=state="OPEN" AND reviewers.uuid="{uuid}"` — include `participants`. Always put `state="OPEN"` inside `q`, never as a standalone param. After fetching, check `participants` for your UUID: if your `role` is `approved`, **skip** (already reviewed). Only flag where your status is `null` or `needs_work`.
-2. **Your open PRs:** `q=state="OPEN" AND author.uuid="{uuid}"` — include `participants`. Flag PRs where someone left a comment (`comment_count > 0`, recent `updated_on`) and you haven't responded.
+2. **Your open PRs:** `q=state="OPEN" AND author.uuid="{uuid}"` — include `participants`. For any PR where `comment_count > 0`, fetch the comments: `bb_get /2.0/repositories/mirudman/{repo}/pullrequests/{id}/comments` with `jq: "values[-10:]"` (last 10 comments). A reviewer comment is considered **answered** if any of these are true: (a) `resolved` is `true` on the comment, (b) your latest comment (your UUID) is newer than the reviewer's latest comment. Only flag if at least one reviewer comment is unresolved AND newer than your last reply (or you have no reply at all).
 
 **Merge conflicts:** flag any of your open PRs whose merge status indicates a conflict.
 
