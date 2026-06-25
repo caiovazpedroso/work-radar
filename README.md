@@ -63,6 +63,35 @@ In any Claude Code conversation, trigger with natural phrasing — or invoke `/w
 
 See [SKILL.md](SKILL.md) for the full workflow — one file, one agent, inline MCP passes; scripts handle prep/commit/render.
 
+### Example output
+
+```
+## Work Radar — 2026-06-25, Thursday
+
+### 🔴 Needs you (2)
+- 🔴 [Bitbucket] node-backend PR #1194 (JON-17297) — 2/2 approved, ready to merge · https://bitbucket.org/mirudman/node-backend/pull-requests/1194
+- 🟡 [Jira] JON-18476 has a comment from Jun 23 not replied to · https://getjones.atlassian.net/browse/JON-18476
+
+Sources: Jira 🟡 · Slack ✅ · Bitbucket 🔴 · Gmail ✅ · Fathom ✅
+
+---
+### Week Ahead
+#### Sprint Health — Jones - Sprint 122, ends 2026-07-05
+7 of 10 work days left
+✅ Pace light — ~24h estimated task hours remaining vs 56h capacity
+
+**Tickets to finish this sprint**
+- JON-17297 · Additional Insureds Feedback - GAP quote — Pull Request (4h)
+- JON-18495 · AI Default Gaps messaging — To Do (no estimate)
+
+**Today — Thursday Jun 25**
+- Squad Daily · 1:00 PM
+- 1:1 with boss · 3:00 PM
+
+---
+🔴 2 items need attention
+```
+
 ### Default profile
 
 When you do not name a profile:

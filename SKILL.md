@@ -233,7 +233,7 @@ On yes: `node "{skill_dir}/scripts/patch-fathom-jira.mjs" --recording-id … --f
 
 **Always (not time-windowed):**
 - `to:me is:dm is:unread` → **MUST `slack_read_channel` each DM** (never `read_thread` for DMs). Flag only if no message from you with `ts` > triggering msg. Search alone causes false positives.
-- `is:starred` → flag for action.
+- `is:saved` → flag for action.
 
 **Since-windowed** (`after` = `since.unix` param):
 - `@{user_id}` mentions → `read_thread`; flag only if you haven't replied after mention.
@@ -267,7 +267,7 @@ New pending entries need `card` + `processed_at` in `cache_delta.gmail_threads`.
 
 Per repo, parallel:
 1. **Review queue:** `q=state="OPEN" AND reviewers.uuid="{uuid}"` — skip if your participant role is `approved`.
-2. **Your PRs:** `q=state="OPEN" AND author.uuid="{uuid}"` — if `comment_count > 0`, fetch last 10 comments; flag unresolved reviewer comments newer than your last reply. Flag merge conflicts.
+2. **Your PRs:** `q=state="OPEN" AND author.uuid="{uuid}"` — for each PR, fetch participants to count approvals (`participants[*].state == "approved"`). Always include approval count in the report (e.g. "2/2 approved"). If approvals ≥ 2, flag 🔴 as ready to merge — don't let it go stale. If `comment_count > 0`, also fetch last 10 comments; flag unresolved reviewer comments newer than your last reply. Flag merge conflicts. **Note:** Bitbucket comment schema uses `user.display_name` (not `author.display_name`) for the comment author — use `user.uuid` to identify if a comment is yours.
 
 `cache_delta: {}`.
 

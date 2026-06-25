@@ -10,3 +10,6 @@ Thumbs.db
 
 # Node
 node_modules/
+
+# Personal Claude Code settings (permissions, local overrides)
+.claude/
